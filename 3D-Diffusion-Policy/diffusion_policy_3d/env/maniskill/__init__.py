@@ -1,0 +1,1 @@
+from .maniskill_wrapper import ManiSkillDP3Wrapper
