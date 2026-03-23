@@ -3,7 +3,7 @@
 # bash scripts/train_policy.sh dp3 dexart_laptop 0322 0 0
 # bash scripts/train_policy.sh simple_dp3 adroit_hammer 0322 0 0
 # bash scripts/train_policy.sh dp3 metaworld_basketball 0602 0 0
-
+# bash scripts/train_policy.sh dp3 maniskill_stack 0112 42 0
 
 
 DEBUG=False
@@ -48,7 +48,3 @@ python train.py --config-name=${config_name}.yaml \
                             exp_name=${exp_name} \
                             logging.mode=${wandb_mode} \
                             checkpoint.save_ckpt=${save_ckpt}
-
-
-
-                                

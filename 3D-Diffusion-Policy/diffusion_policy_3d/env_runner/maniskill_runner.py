@@ -1,7 +1,9 @@
-import numpy as np
+
 import torch
+import numpy as np
 import tqdm
 import argparse
+import time
 
 import gsworld # Must be imported BEFORE arguments so it can securely inject into sys.path!
 from gsworld.mani_skill.utils.wrappers import GSWorldWrapper
@@ -18,6 +20,7 @@ from diffusion_policy_3d.env_runner.base_runner import BaseRunner
 import diffusion_policy_3d.common.logger_util as logger_util
 from termcolor import cprint
 
+
 class ManiSkillRunner(BaseRunner):
     def __init__(self,
                  output_dir,
@@ -26,13 +29,10 @@ class ManiSkillRunner(BaseRunner):
                  n_obs_steps=8,
                  n_action_steps=8,
                  fps=10,
-                 crf=22,
                  render_size=84,
                  tqdm_interval_sec=5.0,
-                 n_envs=None,
+                 n_envs=1,
                  task_name=None,
-                 n_train=None,
-                 n_test=None,
                  device="cuda:0",
                  use_point_crop=True,
                  num_points=1024
@@ -42,7 +42,13 @@ class ManiSkillRunner(BaseRunner):
 
         def env_fn(task_name):
             # Typically ManiSkill environments match task boundaries. Custom params should mirror run_with_gs.
-            base_env = gymnasium.make(task_name, obs_mode="rgb+depth+segmentation")
+            base_env = gymnasium.make(
+                task_name, 
+                obs_mode="rgb+segmentation",
+                num_envs=n_envs,
+                sim_backend="gpu",
+                sim_config=dict(sim_freq=100, control_freq=20)  # match data collection -> 5 physics substeps!
+                )
             
             parser = argparse.ArgumentParser()
             robot_pipe = PipelineParams(parser)
@@ -81,10 +87,9 @@ class ManiSkillRunner(BaseRunner):
             traj_reward = 0
             is_success = False
             while not done:
-                np_obs_dict = dict(obs)
-                obs_dict = dict_apply(np_obs_dict,
-                                      lambda x: torch.from_numpy(x).to(
-                                          device=device))
+                obs_dict = dict_apply(dict(obs),
+                                      lambda x: x.to(device=device) if isinstance(x, torch.Tensor)
+                                      else torch.from_numpy(x).to(device=device))
 
                 with torch.no_grad():
                     obs_dict_input = {}
@@ -92,33 +97,41 @@ class ManiSkillRunner(BaseRunner):
                     obs_dict_input['agent_pos'] = obs_dict['agent_pos'].unsqueeze(0)
                     action_dict = policy.predict_action(obs_dict_input)
 
-                np_action_dict = dict_apply(action_dict,
-                                            lambda x: x.detach().to('cpu').numpy())
-                action = np_action_dict['action'].squeeze(0)
+                action_dict = dict_apply(action_dict,
+                                          lambda x: x.detach())
+                action = action_dict['action'].squeeze(0)
 
+                #start = time.time()
                 obs, reward, done, info = env.step(action)
-
+                #print(f"Env step took: {time.time() - start}") 
                 traj_reward += reward
-                done = np.all(done)
+                done = bool(done)
                 
                 # SAPIEN return metrics dict
                 if isinstance(info, dict) and 'success' in info:
-                    if isinstance(info['success'], bool):
-                        is_success = is_success or info['success']
+                    s = info['success']
+                    if isinstance(s, torch.Tensor):
+                        s = bool(s.any().item())
+                    elif isinstance(s, np.ndarray):
+                        s = bool(s.any())
                     else:
-                        is_success = is_success or max(info['success'])
+                        s = bool(s)
+                    is_success = is_success or s
 
-            all_success_rates.append(is_success)
-            all_traj_rewards.append(traj_reward)
+            all_success_rates.append(float(is_success))
+            all_traj_rewards.append(float(traj_reward))
+
+        def _mean(lst):
+            return sum(lst) / len(lst) if lst else 0.0
 
         log_data = dict()
-        log_data['mean_traj_rewards'] = np.mean(all_traj_rewards)
-        log_data['mean_success_rates'] = np.mean(all_success_rates)
-        log_data['test_mean_score'] = np.mean(all_success_rates)
-        cprint(f"test_mean_score: {np.mean(all_success_rates)}", 'green')
+        log_data['mean_traj_rewards'] = _mean(all_traj_rewards)
+        log_data['mean_success_rates'] = _mean(all_success_rates)
+        log_data['test_mean_score'] = _mean(all_success_rates)
+        cprint(f"test_mean_score: {_mean(all_success_rates)}", 'green')
 
-        self.logger_util_test.record(np.mean(all_success_rates))
-        self.logger_util_test10.record(np.mean(all_success_rates))
+        self.logger_util_test.record(_mean(all_success_rates))
+        self.logger_util_test10.record(_mean(all_success_rates))
         log_data['SR_test_L3'] = self.logger_util_test.average_of_largest_K()
         log_data['SR_test_L5'] = self.logger_util_test10.average_of_largest_K()
 

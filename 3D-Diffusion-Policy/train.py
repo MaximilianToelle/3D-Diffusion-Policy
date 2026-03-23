@@ -75,7 +75,7 @@ class TrainDP3Workspace:
             cfg.training.num_epochs = 100
             cfg.training.max_train_steps = 10
             cfg.training.max_val_steps = 3
-            cfg.training.rollout_every = 20
+            cfg.training.rollout_every = 1
             cfg.training.checkpoint_every = 1
             cfg.training.val_every = 1
             cfg.training.sample_every = 1
@@ -173,7 +173,6 @@ class TrainDP3Workspace:
 
         # save batch for sampling
         train_sampling_batch = None
-
 
         # training loop
         log_path = os.path.join(self.output_dir, 'logs.json.txt')
