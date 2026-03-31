@@ -33,8 +33,10 @@ class GSManiskillDataset(BaseDataset):
         self.actor_keys = []
         if "stack" in self.scene_gs_cfg_name.lower():
             self.actor_keys = ['005_tomato_soup_can', 'dtc_red_tomato_can_fr3']
-            
-        load_keys = ['state', 'action', 'point_cloud']
+        else:
+            raise ValueError("Other scenes are not yet implemented!")    
+
+        load_keys = ['state', 'action']
         for act in self.actor_keys:
             load_keys.append(f'actor_pose_{act}')
             
@@ -84,8 +86,7 @@ class GSManiskillDataset(BaseDataset):
         return val_set
 
     def get_normalizer(self, mode='limits', **kwargs):
-        # The normalizer only cares about action and agent_pos usually.
-        # point_cloud is often normalized separately or handled implicitly.
+        # TODO: How do I normalize the gsplat representation? 
         data = {
             'action': self.replay_buffer['action'],
             'agent_pos': self.replay_buffer['state'],

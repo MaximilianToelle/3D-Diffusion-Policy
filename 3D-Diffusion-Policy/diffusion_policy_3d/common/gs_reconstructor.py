@@ -57,14 +57,16 @@ class GSReconstructor:
             robot_uids=robot_uid,
             render_mode=None,
             sim_config=dict(sim_freq=100, control_freq=20),
-            sim_backend="auto",
+            sim_backend="gpu",
         )
         env4moving.reset(seed=0)
         self.env4moving = env4moving.unwrapped
-
+        
+        # setting the robot to its GS scan pose
         self.env4moving.agent.robot.set_qpos(robot_scan_qpos[robot_uid])
         
-        # Cache the initial transformation matrices of the links in the GS scan pose
+        # Cache the initial transformation matrices of the links in the GS scan pose w.r.t to sapien
+        # NOTE: later needed for GS transform calculation
         self.gs_link_pose_mats = []
         for link in self.env4moving.agent.robot.get_links():
             link_mat = link.pose.to_transformation_matrix().to(self.device).squeeze()
@@ -73,19 +75,23 @@ class GSReconstructor:
             else:
                 self.gs_link_pose_mats.append(link_mat.squeeze(0))
 
-        # Cache semantic indices to avoid integer `==` comparisons during the training loop
+        # Cache semantic indices of each Gaussian
         semantics = self.base_model._semantics.long().squeeze(-1).to(self.device).contiguous()
         self._semantic_indices = {} # key -> index tensor for transform_gaussians
         
+        # Robot
         for link in self.env4moving.agent.robot.get_links():
             if link.name in self.gs_semantics:
                 target = torch.tensor(self.gs_semantics[link.name], device=semantics.device).long()
                 self._semantic_indices[link.name] = torch.where(torch.isin(semantics, target))[0]
-                
+
+        # Objects
         for actor_key, sem_id in self.obj_gs_semantics.items():
             self._semantic_indices[actor_key] = torch.where(semantics == sem_id)[0]
 
         # Performance optimization: cache all moving indices and object mapping
+        # NOTE: we compute the rigid transform for each moving object and 
+        # apply it via object id to all Gaussians belonging to an object
         all_ordered_indices = []
         gaussian_id_to_object_id = []
         self._moving_objects = [] # list of dicts with metadata
@@ -129,6 +135,17 @@ class GSReconstructor:
         self.gs_link_pose_mats_inv = torch.stack([torch.linalg.inv(m) for m in self.gs_link_pose_mats])
         self.sim2gs_arm_trans_inv = torch.linalg.inv(self.sim2gs_arm_trans)
 
+        # Pre-calculate actor scales (NOTE: rigid body assumption + uniform scale assumption!)
+        self.actor_true_scales = {} # Used for matrix division
+        self.actor_final_scales = {} # Used for GS rendering
+        for actor_key, trans in sim2gs_object_transforms.items():
+            base_T = self.sim2gs_arm_trans @ torch.eye(4, device=self.device) @ torch.tensor(trans, device=self.device).inverse()
+            _, scale, _, _ = extract_rigid_transform(base_T)
+            
+            self.actor_true_scales[actor_key] = scale
+            self.actor_final_scales[actor_key] = scale * object_scale[actor_key]
+
+
     def reconstruct(self, qpos: torch.Tensor, actor_poses: dict, gaussian_indices=None):
         """
         Reconstructs the 3D Gaussian cloud for a single timestep.
@@ -147,9 +164,7 @@ class GSReconstructor:
         # 1. Update robot kinematics
         self.env4moving.agent.robot.set_qpos(qpos)
         
-        # 2. Collect parts
-        start_time = time.time()
-        
+        # 2. Collect the transforms of all moving parts (robot links and objects) 
         K = len(self._moving_objects)
         batch_rot = torch.zeros((K, 3, 3), device=self.device)
         batch_trans = torch.zeros((K, 3), device=self.device)
@@ -157,10 +172,10 @@ class GSReconstructor:
         
         robot_links = self.env4moving.agent.robot.get_links()
         
-        for i, src in enumerate(self._moving_objects):
-            if src["type"] == "robot":
+        for i, part in enumerate(self._moving_objects):
+            if part["type"] == "robot":
                 # Extract pure (4, 4) transform from SAPIEN
-                link_mat = robot_links[src["link_idx"]].pose.to_transformation_matrix()[0].to(self.device)
+                link_mat = robot_links[part["link_idx"]].pose.to_transformation_matrix()[0].to(self.device)
                 
                 # Note: Hardcoded xarm object offset
                 if "xarm" in self.env4moving.agent.uid:
@@ -168,12 +183,13 @@ class GSReconstructor:
                         link_mat[j, 3] += object_offset["xarm_arm"][j]
                 
                 # Compute T_sim2gs
-                T = self.sim2gs_arm_trans @ link_mat @ self.gs_link_pose_mats_inv[src["link_idx"]] @ self.sim2gs_arm_trans_inv
+                T = self.sim2gs_arm_trans @ link_mat @ self.gs_link_pose_mats_inv[part["link_idx"]] @ self.sim2gs_arm_trans_inv
                 batch_rot[i] = T[:3, :3]
                 batch_trans[i] = T[:3, 3]
+                # robot parts are rigid -> scale is always the same -> 1
                 
-            elif src["type"] == "actor":
-                actor_key = src["name"]
+            elif part["type"] == "actor":
+                actor_key = part["name"]
                 if actor_key not in actor_poses or actor_key not in sim2gs_object_transforms:
                     continue
                     
@@ -190,8 +206,9 @@ class GSReconstructor:
                 sim2gs_obj_trans_inv = torch.tensor(sim2gs_object_transforms[actor_key], device=self.device, dtype=torch.float32).inverse()
                 T = self.sim2gs_arm_trans @ mat @ sim2gs_obj_trans_inv
                 
-                M_rigid, scale, R_rigid, t = extract_rigid_transform(T)
-                batch_scale[i] = scale * object_scale[actor_key]
+                batch_scale[i] = self.actor_final_scales[actor_key]
+                batch_rot[i] = T[:3, :3] / self.actor_true_scales[actor_key] 
+                batch_trans[i] = T[:3, 3]
                 
         # Determine subset of points to transform
         if gaussian_indices is not None:
@@ -206,7 +223,7 @@ class GSReconstructor:
         final_trans = batch_trans[active_object_ids] # (N, 3)
         final_scale = batch_scale[active_object_ids] # (N,)
         
-        # 3. Apply Unified Transformation
+        # 3. Apply Transformation to all active Gaussians
         gs_xyz, gs_scaling, gs_rotation, gs_opacity = transform_gaussians(
             self.base_model,
             selected_indices=active_moving_indices,
