@@ -1,6 +1,7 @@
 # use the same command as training except the script
 # for example:
 # bash scripts/eval_policy.sh dp3 adroit_hammer 0322 0 0
+# bash scripts/eval_policy.sh dp3 maniskill_stack 0112 42 0
 
 
 
