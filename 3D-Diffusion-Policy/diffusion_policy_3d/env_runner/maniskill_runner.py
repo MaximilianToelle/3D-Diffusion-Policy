@@ -4,6 +4,8 @@ import numpy as np
 import tqdm
 import argparse
 import time
+import imageio
+import os
 
 import gsworld # Must be imported BEFORE arguments so it can securely inject into sys.path!
 from gsworld.mani_skill.utils.wrappers import GSWorldWrapper
@@ -44,10 +46,13 @@ class ManiSkillRunner(BaseRunner):
             # Typically ManiSkill environments match task boundaries. Custom params should mirror run_with_gs.
             base_env = gymnasium.make(
                 task_name, 
-                obs_mode="rgb+segmentation",
+                robot_uids="fr3_umi",
+                obs_mode="rgb+depth+segmentation",
+                control_mode="pd_joint_pos",
                 num_envs=n_envs,
+                max_episode_steps=max_steps,
                 sim_backend="gpu",
-                sim_config=dict(sim_freq=100, control_freq=20)  # match data collection -> 5 physics substeps!
+                sim_config=dict(sim_freq=100, control_freq=20),  # match data collection -> 5 physics substeps!
                 )
             
             parser = argparse.ArgumentParser()
@@ -57,7 +62,7 @@ class ManiSkillRunner(BaseRunner):
             
             return MultiStepWrapper(
                 SimpleVideoRecordingWrapper(
-                    ManiSkillDP3Wrapper(mapped_env, num_points=num_points, bounds=[-0.2, 0.8, -0.5, 0.5, 0.01, 1.0])
+                    ManiSkillDP3Wrapper(mapped_env, num_points=num_points)
                 ),
                 n_obs_steps=n_obs_steps,
                 n_action_steps=n_action_steps,
@@ -120,6 +125,21 @@ class ManiSkillRunner(BaseRunner):
 
             all_success_rates.append(float(is_success))
             all_traj_rewards.append(float(traj_reward))
+
+            # The SimpleVideoRecordingWrapper records frames into memory.
+            # We must explicitly extract them here before the next env.reset() clears them!
+            try:
+                video = env.env.get_video() # shape: (T, C, H, W)
+                
+                # Save locally as an mp4 file for easy viewing
+                video_dir = os.path.join(self.output_dir, "eval_videos")
+                os.makedirs(video_dir, exist_ok=True)
+                video_to_save = video.transpose(0, 2, 3, 1) # Convert to (T, H, W, C)
+                out_path = os.path.join(video_dir, f"eval_ep_{episode_idx}.mp4")
+                imageio.mimsave(out_path, video_to_save, fps=self.fps, macro_block_size=1)
+                cprint(f"Saved evaluation video to {out_path}", "cyan")
+            except Exception as e:
+                cprint(f"Failed to extract/save video from wrapper: {e}", "red")
 
         def _mean(lst):
             return sum(lst) / len(lst) if lst else 0.0

@@ -6,59 +6,19 @@ import time
 import torch
 
 from pytorch3d.ops import sample_farthest_points
+from gsworld.constants import fr3_gs_semantics, obj_gs_semantics
 
 
-def depth_to_point_cloud(depth, rgb, intrinsic, extrinsic_cv):
-    """Convert depth + rgb images to a coloured point cloud. All inputs/outputs are torch tensors on the same device."""
-    H, W = depth.shape[:2]
-    device = depth.device
-
-    u, v = torch.meshgrid(torch.arange(W, device=device, dtype=depth.dtype),
-                          torch.arange(H, device=device, dtype=depth.dtype),
-                          indexing='xy')
-
-    fx, fy = intrinsic[0, 0], intrinsic[1, 1]
-    cx, cy = intrinsic[0, 2], intrinsic[1, 2]
-
-    z = depth[..., 0]
-    x = (u - cx) * z / fx
-    y = (v - cy) * z / fy
-
-    pts_cam = torch.stack([x, y, z, torch.ones_like(z)], dim=-1).reshape(-1, 4)
-    rgb_flat = rgb.reshape(-1, 3).float() / 255.0
-
-    ext_4x4 = torch.eye(4, device=device, dtype=extrinsic_cv.dtype)
-    ext_4x4[:3, :] = extrinsic_cv
-    cam2world = torch.linalg.inv(ext_4x4)
-
-    pts_world = (cam2world @ pts_cam.T).T[:, :3]
-
-    valid = (z.flatten() > 0.01) & (z.flatten() < 3.0)
-    return pts_world[valid], rgb_flat[valid]
-
-
-def crop_workspace(pts, rgb, bounds):
-    """Crop point cloud to workspace bounds. All inputs/outputs are torch tensors."""
-    mask = (pts[:, 0] >= bounds[0]) & (pts[:, 0] <= bounds[1]) & \
-           (pts[:, 1] >= bounds[2]) & (pts[:, 1] <= bounds[3]) & \
-           (pts[:, 2] >= bounds[4]) & (pts[:, 2] <= bounds[5])
-    return pts[mask], rgb[mask]
-
-
-def farthest_point_sample(pts, rgb, npoint):
-    pts_batch = pts.unsqueeze(0)  # (1, N, 3)
-    _, indices = sample_farthest_points(pts_batch, K=npoint)
-    indices = indices.squeeze(0)  # (npoint,)
-    return pts[indices], rgb[indices]
+STATIC_ACTORS = {"table-workspace", "ground"}
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 class ManiSkillDP3Wrapper(gym.Env):
-    def __init__(self, env, num_points=1024, bounds=[-0.2, 0.8, -0.5, 0.5, 0.01, 1.0]):
+    def __init__(self, env, num_points=1024):
         super().__init__()
         self.env = env
         self.num_points = num_points
-        self.bounds = bounds
-        self.cams = ['wrist_cam', 'right_cam']
+        self.cam = 'right_cam'
 
         # Cast Gymnasium action space to legacy Gym action space for DP3's wrapper math
         orig_as = self.env.action_space
@@ -86,6 +46,20 @@ class ManiSkillDP3Wrapper(gym.Env):
             ),
         })
 
+        # Preprocessing env actor and robot strings to object ids for later pcd masking through segmentation
+        all_actor_names = list(self.env.unwrapped.scene.actors.keys())
+        moving_actors = sorted([a for a in all_actor_names if a not in STATIC_ACTORS])
+
+        actor_ids = torch.tensor([obj_gs_semantics[actor] for actor in moving_actors], device=DEVICE, dtype=torch.long)
+        robot_ids = []
+        for value in fr3_gs_semantics.values():
+            if isinstance(value, list):
+                robot_ids.extend(value)
+            else:
+                robot_ids.append(value)
+        robot_ids = torch.tensor(robot_ids, device=DEVICE, dtype=torch.long)
+        self.all_target_ids = torch.cat([robot_ids, actor_ids])        
+
     def _extract_state(self, obs):
         # We assume the env returns unbatched shapes or batched arrays of size (1, ...)
         qpos = obs['agent']['qpos']
@@ -95,39 +69,39 @@ class ManiSkillDP3Wrapper(gym.Env):
 
     def _get_obs_dict(self, obs):
         state = self._extract_state(obs)
+       
+        depth = obs['sensor_data'][self.cam]['depth']
+        rgb = obs['sensor_data'][self.cam]['rgb']
+        seg = obs['sensor_data'][self.cam]['segmentation']
+        intr = obs['sensor_param'][self.cam]['intrinsic_cv']
+        extr = obs['sensor_param'][self.cam]['gl_cam2sapien_world']
 
-        step_pts, step_rgb = [], []
-        for cam in self.cams:
-            depth = obs['sensor_data'][cam]['depth']
-            rgb = obs['sensor_data'][cam]['rgb']
-            intr = obs['sensor_param'][cam]['intrinsic_cv']
-            extr = obs['sensor_param'][cam]['extrinsic_cv']
+        # handle batch dimensions if the env returns (1, H, W, C)
+        if len(depth.shape) == 4:
+            depth = depth[0]
+            rgb = rgb[0]
+            seg = seg[0]
+            intr = intr[0]
+            extr = extr[0]
 
-            # handle batch dimensions if the env returns (1, H, W, C)
-            if len(depth.shape) == 4:
-                depth = depth[0]
-                rgb = rgb[0]
-                intr = intr[0]
-                extr = extr[0]
+        self._last_rgb = rgb.clone().to(torch.uint8)
 
-            if cam == self.cams[0]:
-                self._last_rgb = rgb.clone().to(torch.uint8)
+        pcd_pts = get_sapien_world_pcd(
+            depth / 1000.0,     # extrinsics are in meter!
+            intr, 
+            extr
+        )
 
-            pts, colors = depth_to_point_cloud(depth, rgb, intr, extr)
-            step_pts.append(pts)
-            step_rgb.append(colors)
+        # Process pcd - filter out static actors and background + FPS
+        flat_seg = seg.reshape(-1)
+        mask = torch.isin(flat_seg, self.all_target_ids)
+        masked_pcd_pts = pcd_pts[mask]
 
-        merged_pts = torch.cat(step_pts, dim=0)
-        merged_rgb = torch.cat(step_rgb, dim=0)
-
-        # Process pc
-        merged_pts, merged_rgb = crop_workspace(merged_pts, merged_rgb, self.bounds)
-        merged_pts, merged_rgb = farthest_point_sample(merged_pts, merged_rgb, npoint=self.num_points)
-        pc_6d = torch.cat([merged_pts, merged_rgb], dim=-1).float()
+        final_pcd = farthest_point_sample(masked_pcd_pts, npoint=self.num_points)
 
         return {
             'agent_pos': state,
-            'point_cloud': pc_6d,
+            'point_cloud': final_pcd,
         }
 
     def step(self, action):
@@ -168,3 +142,42 @@ class ManiSkillDP3Wrapper(gym.Env):
         if hasattr(self, '_last_rgb'):
             return self._last_rgb.cpu().numpy()
         return torch.zeros((256, 256, 3), dtype=torch.uint8).numpy()
+
+
+def get_sapien_world_pcd(depth, intrinsic, gl_cam2sapien_world):
+    """
+    Converts depth to pcd in sapien world coordinates assuming graphics convention (x-axis right, y-axis upward, z-axis backward) in extrinsics. 
+    All inputs/outputs are torch tensors on the same device.
+    """
+    
+    H, W = depth.shape[:2]
+    device = depth.device
+
+    u, v = torch.meshgrid(torch.arange(W, device=device, dtype=depth.dtype) + 0.5,  # pixel center depth
+                          torch.arange(H, device=device, dtype=depth.dtype) + 0.5,
+                          indexing='xy')
+
+    fx, fy = intrinsic[0, 0], intrinsic[1, 1]
+    cx, cy = intrinsic[0, 2], intrinsic[1, 2]
+
+    d = depth[..., 0]
+    
+    z = - d     # assuming positive depth values
+    x = (u - cx) * d / fx   # X is right -> (u - cx) is positive on the right
+    y = -(v - cy) * d / fy   # Y is upward -> (v - cy) is positive downward!
+
+    pts_cam = torch.stack([x, y, z], dim=-1).reshape(-1, 3)
+
+    rotation_mat = gl_cam2sapien_world[:3, :3]
+    translation_vec = gl_cam2sapien_world[:3, 3].unsqueeze(0)
+    
+    pcd_pts_world = torch.matmul(pts_cam, rotation_mat.transpose(-2, -1)) + translation_vec
+    
+    return pcd_pts_world
+
+
+def farthest_point_sample(pts, npoint):
+    pts_batch = pts.unsqueeze(0)  # (1, N, 3)
+    _, indices = sample_farthest_points(pts_batch, K=npoint)
+    indices = indices.squeeze(0)  # (npoint,)
+    return pts[indices]
