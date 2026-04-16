@@ -14,6 +14,7 @@ import dill
 from omegaconf import OmegaConf
 import pathlib
 from torch.utils.data import DataLoader
+from pytorch3d.ops import sample_farthest_points
 import copy
 import random
 import wandb
@@ -25,6 +26,7 @@ import time
 import threading
 from hydra.core.hydra_config import HydraConfig
 from diffusion_policy_3d.policy.dp3 import DP3
+from diffusion_policy_3d.policy.gsplat_dp3 import GSplatDP3
 from diffusion_policy_3d.dataset.base_dataset import BaseDataset
 from diffusion_policy_3d.env_runner.base_runner import BaseRunner
 from diffusion_policy_3d.common.checkpoint_util import TopKCheckpointManager
@@ -50,7 +52,10 @@ class TrainDP3Workspace:
         random.seed(seed)
 
         # configure model
-        self.model: DP3 = hydra.utils.instantiate(cfg.policy)
+        if cfg.policy._target_ == "diffusion_policy_3d.policy.dp3.DP3":
+            self.model: DP3 = hydra.utils.instantiate(cfg.policy)
+        elif cfg.policy._target_ == "diffusion_policy_3d.policy.gsplat_dp3.GSplatDP3":
+            self.model: GSplatDP3 = hydra.utils.instantiate(cfg.policy)
 
         self.ema_model: DP3 = None
         if cfg.training.use_ema:
@@ -72,15 +77,15 @@ class TrainDP3Workspace:
         cfg = copy.deepcopy(self.cfg)
         
         if cfg.training.debug:
-            cfg.training.num_epochs = 100
-            cfg.training.max_train_steps = 10
-            cfg.training.max_val_steps = 3
+            cfg.training.num_epochs = 1
+            cfg.training.max_train_steps = 2
+            cfg.training.max_val_steps = 2
             cfg.training.rollout_every = 1
             cfg.training.checkpoint_every = 1
             cfg.training.val_every = 1
             cfg.training.sample_every = 1
             RUN_ROLLOUT = True
-            RUN_CKPT = False
+            RUN_CKPT = True
             verbose = True
         else:
             RUN_ROLLOUT = True
@@ -186,9 +191,10 @@ class TrainDP3Workspace:
                     t1 = time.time()
                     # device transfer
                     batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
+                    
                     if train_sampling_batch is None:
                         train_sampling_batch = batch
-                
+
                     # compute loss
                     t1_1 = time.time()
                     raw_loss, loss_dict = self.model.compute_loss(batch)
@@ -196,6 +202,21 @@ class TrainDP3Workspace:
                     loss.backward()
                     
                     t1_2 = time.time()
+
+                    # === For logging: Extract Gradient Norms and Feature Magnitudes === 
+                    extractor = self.model.obs_encoder.extractor
+                    # 1. Retrieve the feature magnitudes saved during the forward pass
+                    diagnostic_metrics = copy.deepcopy(extractor._latest_feature_magnitudes)
+                    # 2. Extract gradient norms for the last linear layer of each shallow MLP
+                    for key in extractor.ordered_keys:
+                        # param_groups[key] is a Sequential(Linear, LayerNorm, Mish, Linear)
+                        # Index 3 is the final nn.Linear layer before concatenation
+                        last_linear_layer = extractor.param_groups[key][3]
+                        
+                        if last_linear_layer.weight.grad is not None:
+                            # Compute L2 norm of the gradient tensor
+                            grad_norm = last_linear_layer.weight.grad.norm().item()
+                            diagnostic_metrics[f'grad_norm/{key}'] = grad_norm
 
                     # step optimizer
                     if self.global_step % cfg.training.gradient_accumulate_every == 0:
@@ -218,7 +239,8 @@ class TrainDP3Workspace:
                         'lr': lr_scheduler.get_last_lr()[0]
                     }
                     t1_5 = time.time()
-                    step_log.update(loss_dict)
+                    # step_log.update(loss_dict)    # currently same as raw_loss
+                    step_log.update(diagnostic_metrics)
                     t2 = time.time()
                     
                     if verbose:
@@ -249,19 +271,22 @@ class TrainDP3Workspace:
                 policy = self.ema_model
             policy.eval()
 
-            # run rollout
+            # run rollouts based on training and validation init poses
             if (self.epoch % cfg.training.rollout_every) == 0 and RUN_ROLLOUT and env_runner is not None:
                 t3 = time.time()
-                # runner_log = env_runner.run(policy, dataset=dataset)
-                runner_log = env_runner.run(policy)
+                runner_log_train = env_runner.run(policy, dataset=dataset)
+                runner_log_val = env_runner.run(policy, dataset=val_dataset)
                 t4 = time.time()
-                # print(f"rollout time: {t4-t3:.3f}")
-                # log all
-                step_log.update(runner_log)
+                # print(f"rollout time: {(t4-t3)/2:.3f}")
+                
+                # log rollouts with prefix
+                for k, v in runner_log_train.items():
+                    step_log[f"train_{k}"] = v
+                for k, v in runner_log_val.items():
+                    step_log[f"val_{k}"] = v
 
             
-                
-            # run validation
+            # get validation loss
             if (self.epoch % cfg.training.val_every) == 0 and RUN_VALIDATION:
                 with torch.no_grad():
                     val_losses = list()
@@ -270,6 +295,7 @@ class TrainDP3Workspace:
                         for batch_idx, batch in enumerate(tepoch):
                             batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                             loss, loss_dict = self.model.compute_loss(batch)
+
                             val_losses.append(loss)
                             if (cfg.training.max_val_steps is not None) \
                                 and batch_idx >= (cfg.training.max_val_steps-1):
@@ -277,7 +303,8 @@ class TrainDP3Workspace:
                     if len(val_losses) > 0:
                         val_loss = torch.mean(torch.tensor(val_losses)).item()
                         # log epoch average validation loss
-                        step_log['val_loss'] = val_loss
+                        step_log['validation_loss'] = val_loss
+
 
             # run diffusion sampling on a training batch
             if (self.epoch % cfg.training.sample_every) == 0:
@@ -297,9 +324,11 @@ class TrainDP3Workspace:
                     del result
                     del pred_action
                     del mse
-
+            
+            
             if env_runner is None:
-                step_log['test_mean_score'] = - train_loss
+                # needed for checkpoint handling, TopKCheckpointManager looks at max scores 
+                step_log['val_mean_score'] = - train_loss
                 
             # checkpoint
             if (self.epoch % cfg.training.checkpoint_every) == 0 and cfg.checkpoint.save_ckpt:
@@ -332,12 +361,12 @@ class TrainDP3Workspace:
             self.epoch += 1
             del step_log
 
-    def eval(self):
+    def eval(self, checkpoint_tag):
         # load the latest checkpoint
         
         cfg = copy.deepcopy(self.cfg)
         
-        lastest_ckpt_path = self.get_checkpoint_path(tag="latest")
+        lastest_ckpt_path = self.get_checkpoint_path(tag=checkpoint_tag)
         if lastest_ckpt_path.is_file():
             cprint(f"Resuming from checkpoint {lastest_ckpt_path}", 'magenta')
             self.load_checkpoint(path=lastest_ckpt_path)
@@ -415,7 +444,7 @@ class TrainDP3Workspace:
         if tag=='latest':
             return pathlib.Path(self.output_dir).joinpath('checkpoints', f'{tag}.ckpt')
         elif tag=='best': 
-            # the checkpoints are saved as format: epoch={}-test_mean_score={}.ckpt
+            # the checkpoints are saved as format: epoch={}-val_mean_score={}.ckpt
             # find the best checkpoint
             checkpoint_dir = pathlib.Path(self.output_dir).joinpath('checkpoints')
             all_checkpoints = os.listdir(checkpoint_dir)
@@ -424,13 +453,16 @@ class TrainDP3Workspace:
             for ckpt in all_checkpoints:
                 if 'latest' in ckpt:
                     continue
-                score = float(ckpt.split('test_mean_score=')[1].split('.ckpt')[0])
+                score = float(ckpt.split('val_mean_score=')[1].split('.ckpt')[0])
                 if score > best_score:
                     best_ckpt = ckpt
                     best_score = score
             return pathlib.Path(self.output_dir).joinpath('checkpoints', best_ckpt)
         else:
-            raise NotImplementedError(f"tag {tag} not implemented")
+            if tag.endswith('.ckpt'):
+                return pathlib.Path(self.output_dir).joinpath('checkpoints', tag)
+            else:
+                return pathlib.Path(self.output_dir).joinpath('checkpoints', f'{tag}.ckpt')
             
             
 

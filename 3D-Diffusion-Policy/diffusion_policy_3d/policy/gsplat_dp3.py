@@ -8,7 +8,6 @@ from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from termcolor import cprint
 import copy
 import time
-import pytorch3d.ops as torch3d_ops
 
 from diffusion_policy_3d.model.common.normalizer import LinearNormalizer
 from diffusion_policy_3d.policy.base_policy import BasePolicy
@@ -16,32 +15,34 @@ from diffusion_policy_3d.model.diffusion.conditional_unet1d import ConditionalUn
 from diffusion_policy_3d.model.diffusion.mask_generator import LowdimMaskGenerator
 from diffusion_policy_3d.common.pytorch_util import dict_apply
 from diffusion_policy_3d.common.model_util import print_params
-from diffusion_policy_3d.model.vision.pointnet_extractor import DP3Encoder
 
-class DP3(BasePolicy):
-    def __init__(self, 
-            shape_meta: dict,
-            noise_scheduler: DDPMScheduler,
-            horizon, 
-            n_action_steps, 
-            n_obs_steps,
-            num_inference_steps=None,
-            obs_as_global_cond=True,
-            diffusion_step_embed_dim=256,
-            down_dims=(256,512,1024),
-            kernel_size=5,
-            n_groups=8,
-            condition_type="film",
-            use_down_condition=True,
-            use_mid_condition=True,
-            use_up_condition=True,
-            encoder_output_dim=256,
-            crop_shape=None,
-            use_pc_color=False,
-            pointnet_type="pointnet",
-            pointcloud_encoder_cfg=None,
-            # parameters passed to step
-            **kwargs):
+from diffusion_policy_3d.model.vision.gsplat_encoder import GSplatDP3Encoder
+
+
+class GSplatDP3(BasePolicy):
+    def __init__(
+        self, 
+        shape_meta: dict,
+        noise_scheduler: DDPMScheduler,
+        horizon, 
+        n_action_steps, 
+        n_obs_steps,
+        num_inference_steps=None,
+        obs_as_global_cond=True,
+        diffusion_step_embed_dim=256,
+        down_dims=(256,512,1024),
+        kernel_size=5,
+        n_groups=8,
+        condition_type="film",
+        use_down_condition=True,
+        use_mid_condition=True,
+        use_up_condition=True,
+        use_rgb_color=False,
+        encoder_output_dim=64,
+        gsplat_encoder_cfg=None,
+        # parameters passed to step
+        **kwargs
+    ):
         super().__init__()
 
         self.condition_type = condition_type
@@ -58,15 +59,12 @@ class DP3(BasePolicy):
             
         obs_shape_meta = shape_meta['obs']
         obs_dict = dict_apply(obs_shape_meta, lambda x: x['shape'])
-
-
-        obs_encoder = DP3Encoder(observation_space=obs_dict,
-                                                   img_crop_shape=crop_shape,
-                                                out_channel=encoder_output_dim,
-                                                pointcloud_encoder_cfg=pointcloud_encoder_cfg,
-                                                use_pc_color=use_pc_color,
-                                                pointnet_type=pointnet_type,
-                                                )
+        
+        obs_encoder = GSplatDP3Encoder(
+            observation_space=obs_dict,  
+            out_channels=encoder_output_dim, 
+            gsplat_encoder_cfg=gsplat_encoder_cfg,
+        )
 
         # create diffusion model
         obs_feature_dim = obs_encoder.output_shape()
@@ -80,10 +78,8 @@ class DP3(BasePolicy):
                 global_cond_dim = obs_feature_dim * n_obs_steps
         
 
-        self.use_pc_color = use_pc_color
-        self.pointnet_type = pointnet_type
-        cprint(f"[DiffusionUnetHybridPointcloudPolicy] use_pc_color: {self.use_pc_color}", "yellow")
-        cprint(f"[DiffusionUnetHybridPointcloudPolicy] pointnet_type: {self.pointnet_type}", "yellow")
+        self.use_rgb_color = use_rgb_color
+        cprint(f"[DiffusionUnetHybridPointcloudPolicy] use_rgb_color: {self.use_rgb_color}", "yellow")
 
 
         model = ConditionalUnet1D(
@@ -172,7 +168,6 @@ class DP3(BasePolicy):
 
         return trajectory
 
-
     def predict_action(self, obs_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
         obs_dict: must include "obs" key
@@ -180,11 +175,6 @@ class DP3(BasePolicy):
         """
         # normalize input
         nobs = self.normalizer.normalize(obs_dict)
-        # this_n_point_cloud = nobs['imagin_robot'][..., :3] # only use coordinate
-        if not self.use_pc_color:
-            nobs['point_cloud'] = nobs['point_cloud'][..., :3]
-        this_n_point_cloud = nobs['point_cloud']
-        
         
         value = next(iter(nobs.values()))
         B, To = value.shape[:2]
@@ -257,12 +247,8 @@ class DP3(BasePolicy):
 
     def compute_loss(self, batch):
         # normalize input
-
         nobs = self.normalizer.normalize(batch['obs'])
         nactions = self.normalizer['action'].normalize(batch['action'])
-
-        if not self.use_pc_color:
-            nobs['point_cloud'] = nobs['point_cloud'][..., :3]
         
         batch_size = nactions.shape[0]
         horizon = nactions.shape[1]
@@ -287,9 +273,6 @@ class DP3(BasePolicy):
             else:
                 # reshape back to B, Do
                 global_cond = nobs_features.reshape(batch_size, -1)
-            # this_n_point_cloud = this_nobs['imagin_robot'].reshape(batch_size,-1, *this_nobs['imagin_robot'].shape[1:])
-            this_n_point_cloud = this_nobs['point_cloud'].reshape(batch_size,-1, *this_nobs['point_cloud'].shape[1:])
-            this_n_point_cloud = this_n_point_cloud[..., :3]
         else:
             # reshape B, T, ... to B*T
             this_nobs = dict_apply(nobs, lambda x: x.reshape(-1, *x.shape[2:]))

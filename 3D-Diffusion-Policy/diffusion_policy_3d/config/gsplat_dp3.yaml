@@ -1,0 +1,26 @@
+defaults:
+  - dp3
+  - override task: gs_maniskill_stack
+  - _self_
+
+name: train_gsplat_dp3
+
+policy:
+  _target_: diffusion_policy_3d.policy.gsplat_dp3.GSplatDP3
+  encoder_output_dim: 64
+  
+  # Nullify inherited Point Cloud parameters
+  use_point_crop: ~
+  crop_shape: ~
+  use_pc_color: ~
+  pointnet_type: ~
+  pointcloud_encoder_cfg: ~
+
+  # Gaussian Splatting parameters
+  gsplat_encoder_cfg:
+    use_rgb_color: false
+    out_channels: ${policy.encoder_output_dim}
+    param_group_feature_dim: 64
+    use_layernorm: true
+    final_norm: layernorm
+    use_projection: true

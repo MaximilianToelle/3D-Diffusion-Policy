@@ -81,14 +81,14 @@ dataloader:
   num_workers: 8
   shuffle: True
   pin_memory: True
-  persistent_workers: False
+  persistent_workers: True
 
 val_dataloader:
   batch_size: 128
   num_workers: 8
   shuffle: False
   pin_memory: True
-  persistent_workers: False
+  persistent_workers: True
 
 optimizer:
   _target_: torch.optim.AdamW
@@ -107,10 +107,10 @@ training:
   num_epochs: 3000
   gradient_accumulate_every: 1
   use_ema: True
-  rollout_every: 200
-  checkpoint_every: 200
+  rollout_every: 1
+  checkpoint_every: 1
   val_every: 1
-  sample_every: 5
+  sample_every: 1
   max_train_steps: null
   max_val_steps: null
   tqdm_interval_sec: 1.0
@@ -119,7 +119,7 @@ logging:
   group: ${exp_name}
   id: null
   mode: online
-  name: ${training.seed}
+  name: "${name}-${task.name}-${training.seed}"
   project: dp3
   resume: true
   tags:
@@ -128,10 +128,10 @@ logging:
 checkpoint:
   save_ckpt: False # if True, save checkpoint every checkpoint_every
   topk:
-    monitor_key: test_mean_score
+    monitor_key: val_mean_success_rates
     mode: max
     k: 1
-    format_str: 'epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt'
+    format_str: 'epoch={epoch:04d}-val_mean_success_rates={val_mean_success_rates:.3f}.ckpt'
   save_last_ckpt: True # this only saves when save_ckpt is True
   save_last_snapshot: False
 

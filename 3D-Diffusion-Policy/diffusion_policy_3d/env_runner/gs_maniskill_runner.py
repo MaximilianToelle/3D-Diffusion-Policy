@@ -31,13 +31,12 @@ class GSManiSkillRunner(BaseRunner):
                  n_obs_steps=8,
                  n_action_steps=8,
                  fps=10,
-                 render_size=84,
                  tqdm_interval_sec=5.0,
                  n_envs=1,
                  task_name=None,
                  device="cuda:0",
-                 use_point_crop=True,
-                 num_gaussians=1024
+                 num_gaussians=1024,
+                 use_gsplat_viewer=False,
                  ):
         super().__init__(output_dir)
         self.task_name = task_name
@@ -62,7 +61,7 @@ class GSManiSkillRunner(BaseRunner):
             
             return MultiStepWrapper(
                 SimpleVideoRecordingWrapper(
-                    GSManiskillDP3Wrapper(mapped_env, num_gaussians=num_gaussians)
+                    GSManiskillDP3Wrapper(mapped_env, num_gaussians=num_gaussians, use_gsplat_viewer=use_gsplat_viewer)
                 ),
                 n_obs_steps=n_obs_steps,
                 n_action_steps=n_action_steps,
@@ -74,10 +73,10 @@ class GSManiSkillRunner(BaseRunner):
         self.env = env_fn(self.task_name)
         self.fps = fps
         self.tqdm_interval_sec = tqdm_interval_sec
-        self.logger_util_test = logger_util.LargestKRecorder(K=3)
-        self.logger_util_test10 = logger_util.LargestKRecorder(K=5)
+        self.logger_util_test3 = logger_util.LargestKRecorder(K=3)
+        self.logger_util_test5 = logger_util.LargestKRecorder(K=5)
 
-    def run(self, policy: BasePolicy, save_video=False):
+    def run(self, policy: BasePolicy, dataset=None):
         device = policy.device
         all_traj_rewards = []
         all_success_rates = []
@@ -85,7 +84,26 @@ class GSManiSkillRunner(BaseRunner):
 
         for episode_idx in tqdm.tqdm(range(self.eval_episodes), desc=f"Eval ManiSkill {self.task_name}", leave=False, mininterval=self.tqdm_interval_sec):
             
-            obs = env.reset()
+            init_state = None
+            if dataset is not None:
+                replay_buffer = dataset.replay_buffer
+                
+                # The dataset uses a boolean mask to filter episodes for training and validation.
+                # NOTE: Always using the train_mask as it is set to be the val_mask in the validation dataset
+                valid_episode_indices = np.where(dataset.train_mask)[0]
+                random_episode_idx = np.random.choice(valid_episode_indices)
+                
+                # TODO: why not episode_starts?
+                start_idx = replay_buffer.episode_ends[random_episode_idx - 1] if random_episode_idx > 0 else 0
+                
+                init_state = dict()
+                if hasattr(dataset, 'actor_keys') and len(dataset.actor_keys) > 0:
+                    init_state['actor_poses'] = {
+                        k: replay_buffer[k][start_idx] for k in dataset.actor_keys
+                    }
+                init_state['agent_pos'] = replay_buffer['state'][start_idx]
+             
+            obs = env.reset(options={'init_state': init_state} if init_state is not None else None)
             policy.reset()
 
             done = False
@@ -98,7 +116,11 @@ class GSManiSkillRunner(BaseRunner):
 
                 with torch.no_grad():
                     obs_dict_input = {}
-                    obs_dict_input['gsplats'] = obs_dict['gsplats'].unsqueeze(0)
+                    obs_dict_input['gs_positions'] = obs_dict['gs_positions'].unsqueeze(0)
+                    obs_dict_input['gs_rotations_9d'] = obs_dict['gs_rotations_9d'].unsqueeze(0)
+                    obs_dict_input['gs_log_scales'] = obs_dict['gs_log_scales'].unsqueeze(0)
+                    obs_dict_input['gs_opacities'] = obs_dict['gs_opacities'].unsqueeze(0)
+                    obs_dict_input['gs_rgb'] = obs_dict['gs_rgb'].unsqueeze(0)
                     obs_dict_input['agent_pos'] = obs_dict['agent_pos'].unsqueeze(0)
                     action_dict = policy.predict_action(obs_dict_input)
 
@@ -148,12 +170,12 @@ class GSManiSkillRunner(BaseRunner):
         log_data = dict()
         log_data['mean_traj_rewards'] = _mean(all_traj_rewards)
         log_data['mean_success_rates'] = _mean(all_success_rates)
-        log_data['test_mean_score'] = _mean(all_success_rates)
-        cprint(f"test_mean_score: {_mean(all_success_rates)}", 'green')
+        # log_data['mean_score'] = _mean(all_success_rates)
+        cprint(f"mean_success_rates: {_mean(all_success_rates)}", 'green')
 
-        self.logger_util_test.record(_mean(all_success_rates))
-        self.logger_util_test10.record(_mean(all_success_rates))
-        log_data['SR_test_L3'] = self.logger_util_test.average_of_largest_K()
-        log_data['SR_test_L5'] = self.logger_util_test10.average_of_largest_K()
+        self.logger_util_test3.record(_mean(all_success_rates))
+        self.logger_util_test5.record(_mean(all_success_rates))
+        log_data['success_rate_largest_3'] = self.logger_util_test3.average_of_largest_K()
+        log_data['success_rate_largest_5'] = self.logger_util_test5.average_of_largest_K()
 
         return log_data

@@ -25,7 +25,8 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 )
 def main(cfg):
     workspace = TrainDP3Workspace(cfg)
-    workspace.eval()
+    checkpoint_tag = getattr(cfg.checkpoint, 'checkpoint_tag', 'latest')
+    workspace.eval(checkpoint_tag)
 
 if __name__ == "__main__":
     main()

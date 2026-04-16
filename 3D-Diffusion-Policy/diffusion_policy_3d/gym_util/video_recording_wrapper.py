@@ -45,4 +45,3 @@ class SimpleVideoRecordingWrapper(gym.Wrapper):
         # to store as mp4 in wandb, we need (T, H, W, C) -> (T, C, H, W)
         video = video.transpose(0, 3, 1, 2)
         return video
-

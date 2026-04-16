@@ -1,0 +1,61 @@
+name: gs_maniskill_stack
+
+num_gaussians: 1024
+
+shape_meta: &shape_meta
+  obs:
+    gs_positions:
+      shape: 
+        - ${task.num_gaussians}
+        - 3
+      type: spatial
+    gs_rotations_9d:
+      shape: 
+        - ${task.num_gaussians}
+        - 9
+      type: spatial
+    gs_log_scales:
+      shape: 
+        - ${task.num_gaussians}
+        - 3
+      type: spatial
+    gs_opacities:
+      shape: 
+        - ${task.num_gaussians}
+        - 1
+      type: spatial
+    gs_rgb:
+      shape: 
+        - ${task.num_gaussians}
+        - 3
+      type: spatial 
+    agent_pos:
+      shape: 
+        - 9
+      type: low_dim
+  action:
+    shape: 
+      - 8
+
+env_runner:
+  _target_: diffusion_policy_3d.env_runner.gs_maniskill_runner.GSManiSkillRunner
+  eval_episodes: 5
+  max_steps: 200
+  n_obs_steps: ${n_obs_steps}
+  n_action_steps: ${n_action_steps}
+  fps: 10
+  n_envs: 1
+  task_name: StackFr3Env-v1
+  num_gaussians: ${task.num_gaussians}
+  use_gsplat_viewer: false
+
+dataset:
+  _target_: diffusion_policy_3d.dataset.gs_maniskill_dataset.GSManiskillDataset
+  zarr_path: /home/max/projects/gsplat_policy/datasets/gsplat_3d_diffusion_policy/stack
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  seed: 42
+  val_ratio: 0
+  max_train_episodes: 1
+  num_gaussians: ${task.num_gaussians}

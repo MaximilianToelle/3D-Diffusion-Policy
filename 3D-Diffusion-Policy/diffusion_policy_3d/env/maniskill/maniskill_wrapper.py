@@ -1,8 +1,5 @@
 import gym
 from gym import spaces
-import sys
-import os
-import time
 import torch
 
 from pytorch3d.ops import sample_farthest_points
