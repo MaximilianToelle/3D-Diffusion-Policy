@@ -39,9 +39,9 @@ class GSplatSceneEncoder(nn.Module):
     def __init__(
         self,
         observation_space: Dict,          # Passed dynamically from the wrapper
-        use_rgb_color: bool = False,
+        param_keys_feature_dims: Dict, 
+        backbone_channels: List,
         out_channels: int = 64,                 # final global feature dim
-        param_group_feature_dim: int = 64,      # parameter group feature dim
         use_layernorm: bool = True,
         final_norm: str = "layernorm",
         use_projection: bool = True,
@@ -50,70 +50,55 @@ class GSplatSceneEncoder(nn.Module):
     ):
         super().__init__()
 
-        cprint(f"[GSplatSceneEncoder] param_group_feature_dim={param_group_feature_dim}", "cyan")
+        cprint(f"[GSplatSceneEncoder] param_groups and feature_dim={param_keys_feature_dims}", "cyan")
         cprint(f"[GSplatSceneEncoder] use_layernorm={use_layernorm}  final_norm={final_norm}", "cyan")
-        cprint(f"[GSplatSceneEncoder] use_rgb_color={use_rgb_color}", "cyan")
-
-        self.use_rgb_color = use_rgb_color
         
         # ── 1. Per-parameter group MLPs (Dynamic mapping) ───────────────────
         self.param_groups = nn.ModuleDict()
         self.ordered_keys = []
         total_group_out = 0
 
-        # Define the base keys we expect to process
-        expected_keys = [
-            "gs_positions", 
-            "gs_rotations_9d", 
-            "gs_log_scales", 
-            "gs_opacities"
-        ]
-        
-        # Conditionally add RGB based on config flag
-        if self.use_rgb_color:
-            expected_keys.append("gs_rgb")
-
-        # Build an MLP for each parameter group found in the observation space
-        for key in expected_keys:
+        # Build an MLP for each parameter group defined for encoding from the observation space:
+        for key in param_keys_feature_dims.keys():
             if key in observation_space:
                 self.ordered_keys.append(key)
                 
                 # The shape is a tuple/list (e.g., [1024, 3]), the last element is channel dim
                 param_dim = observation_space[key][-1] 
                 
+                param_group_feature_dim = param_keys_feature_dims[key]
                 self.param_groups[key] = _shallow_mlp(param_dim, param_group_feature_dim, activation_fn)
                 total_group_out += param_group_feature_dim
             else:
                 raise ValueError(f"Expected key '{key}' not found in observation_space!")
 
         # ── 2. Gsplat Feature Backbone ──────────────────────────────────────
-        mix_dim = max(256, total_group_out)
-        backbone_channels = [mix_dim, 512]
-        self.gsplat_feature_backbone = nn.Sequential(
-            # Layer 1: Mix the concatenated features
-            nn.Linear(total_group_out, backbone_channels[0]),
-            nn.LayerNorm(backbone_channels[0]) if use_layernorm else nn.Identity(),
-            activation_fn(),
+        layers = []
+        current_in_dim = total_group_out
+        assert current_in_dim >= backbone_channels[0], "Mixing Layer is smaller than concatenated feature vectors"
+
+        # Dynamically build the backbone to support any depth
+        for out_dim in backbone_channels:
+            layers.append(nn.Linear(current_in_dim, out_dim))
+            if use_layernorm:
+                layers.append(nn.LayerNorm(out_dim))
+            layers.append(activation_fn())
+            current_in_dim = out_dim
             
-            # Layer 2: Expand features for the global max-pool
-            nn.Linear(backbone_channels[0], backbone_channels[1]),
-            nn.LayerNorm(backbone_channels[1]) if use_layernorm else nn.Identity(),
-            activation_fn(),
-        )
+        self.gsplat_feature_backbone = nn.Sequential(*layers)
 
         # ── 3. Final projection (after global max-pool) ─────────────────────
-        if final_norm == "layernorm":
-            self.final_projection = nn.Sequential(
-                nn.Linear(backbone_channels[-1], out_channels),
-                nn.LayerNorm(out_channels),
-            )
-        elif final_norm == "none":
-            self.final_projection = nn.Linear(backbone_channels[-1], out_channels)
+        if use_projection:
+            if final_norm == "layernorm":
+                self.final_projection = nn.Sequential(
+                    nn.Linear(backbone_channels[-1], out_channels),
+                    nn.LayerNorm(out_channels),
+                )
+            elif final_norm == "none":
+                self.final_projection = nn.Linear(backbone_channels[-1], out_channels)
+            else:
+                raise NotImplementedError(f"final_norm: {final_norm}")
         else:
-            raise NotImplementedError(f"final_norm: {final_norm}")
-
-        self.use_projection = use_projection
-        if not use_projection:
             self.final_projection = nn.Identity()
             cprint("[GSplatSceneEncoder] not using final projection", "yellow")
 
@@ -187,7 +172,7 @@ class GSplatDP3Encoder(nn.Module):
 
         gsplat_encoder_cfg = dict(gsplat_encoder_cfg) if gsplat_encoder_cfg else {}
         
-        # Pass the extracted GS space downward so the inner MLP can build dynamic inputs
+        # Pass the extracted GS space downward so the inner MLP can build dynamic inputs based on gsplat_encoder_cfg
         self.extractor = GSplatSceneEncoder(
             observation_space=self.gs_obs_space,
             **gsplat_encoder_cfg

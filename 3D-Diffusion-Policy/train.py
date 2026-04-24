@@ -160,6 +160,8 @@ class TrainDP3Workspace:
         wandb.config.update(
             {
                 "output_dir": self.output_dir,
+                "train_episode_indices": np.nonzero(dataset.train_mask)[0].tolist(), 
+                "val_episode_indices": np.nonzero(val_dataset.train_mask)[0].tolist(), 
             }
         )
 
@@ -274,8 +276,8 @@ class TrainDP3Workspace:
             # run rollouts based on training and validation init poses
             if (self.epoch % cfg.training.rollout_every) == 0 and RUN_ROLLOUT and env_runner is not None:
                 t3 = time.time()
-                runner_log_train = env_runner.run(policy, dataset=dataset)
-                runner_log_val = env_runner.run(policy, dataset=val_dataset)
+                runner_log_train = env_runner.run(policy, dataset=dataset, prefix="train")
+                runner_log_val = env_runner.run(policy, dataset=val_dataset, prefix="val")
                 t4 = time.time()
                 # print(f"rollout time: {(t4-t3)/2:.3f}")
                 
@@ -328,7 +330,7 @@ class TrainDP3Workspace:
             
             if env_runner is None:
                 # needed for checkpoint handling, TopKCheckpointManager looks at max scores 
-                step_log['val_mean_score'] = - train_loss
+                step_log['val_mean_success_rates'] = - train_loss
                 
             # checkpoint
             if (self.epoch % cfg.training.checkpoint_every) == 0 and cfg.checkpoint.save_ckpt:

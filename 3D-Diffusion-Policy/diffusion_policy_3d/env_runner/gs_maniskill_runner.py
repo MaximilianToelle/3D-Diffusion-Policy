@@ -76,7 +76,7 @@ class GSManiSkillRunner(BaseRunner):
         self.logger_util_test3 = logger_util.LargestKRecorder(K=3)
         self.logger_util_test5 = logger_util.LargestKRecorder(K=5)
 
-    def run(self, policy: BasePolicy, dataset=None):
+    def run(self, policy: BasePolicy, dataset=None, prefix: str = ""):
         device = policy.device
         all_traj_rewards = []
         all_success_rates = []
@@ -93,7 +93,6 @@ class GSManiSkillRunner(BaseRunner):
                 valid_episode_indices = np.where(dataset.train_mask)[0]
                 random_episode_idx = np.random.choice(valid_episode_indices)
                 
-                # TODO: why not episode_starts?
                 start_idx = replay_buffer.episode_ends[random_episode_idx - 1] if random_episode_idx > 0 else 0
                 
                 init_state = dict()
@@ -157,7 +156,7 @@ class GSManiSkillRunner(BaseRunner):
                 video_dir = os.path.join(self.output_dir, "eval_videos")
                 os.makedirs(video_dir, exist_ok=True)
                 video_to_save = video.transpose(0, 2, 3, 1) # Convert to (T, H, W, C)
-                out_path = os.path.join(video_dir, f"eval_ep_{episode_idx}.mp4")
+                out_path = os.path.join(video_dir, f"{prefix}_ep_{episode_idx}.mp4")
                 imageio.mimsave(out_path, video_to_save, fps=self.fps, macro_block_size=1)
                 cprint(f"Saved evaluation video to {out_path}", "cyan")
                 
@@ -173,9 +172,9 @@ class GSManiSkillRunner(BaseRunner):
         # log_data['mean_score'] = _mean(all_success_rates)
         cprint(f"mean_success_rates: {_mean(all_success_rates)}", 'green')
 
-        self.logger_util_test3.record(_mean(all_success_rates))
-        self.logger_util_test5.record(_mean(all_success_rates))
-        log_data['success_rate_largest_3'] = self.logger_util_test3.average_of_largest_K()
-        log_data['success_rate_largest_5'] = self.logger_util_test5.average_of_largest_K()
+        # self.logger_util_test3.record(_mean(all_success_rates))
+        # self.logger_util_test5.record(_mean(all_success_rates))
+        # log_data['success_rate_largest_3'] = self.logger_util_test3.average_of_largest_K()
+        # log_data['success_rate_largest_5'] = self.logger_util_test5.average_of_largest_K()
 
         return log_data

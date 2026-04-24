@@ -7,7 +7,7 @@ name: train_gsplat_dp3
 
 policy:
   _target_: diffusion_policy_3d.policy.gsplat_dp3.GSplatDP3
-  encoder_output_dim: 64
+  encoder_output_dim: 64        # 128
   
   # Nullify inherited Point Cloud parameters
   use_point_crop: ~
@@ -18,9 +18,14 @@ policy:
 
   # Gaussian Splatting parameters
   gsplat_encoder_cfg:
-    use_rgb_color: false
-    out_channels: ${policy.encoder_output_dim}
-    param_group_feature_dim: 64
-    use_layernorm: true
-    final_norm: layernorm
-    use_projection: true
+    param_keys_feature_dims: # defines which param groups to encode to which feature dim 
+      gs_positions: 64          # 128
+      gs_rotations_9d: 64       # 128
+      gs_log_scales: 32         # 64
+      gs_opacities: 16          # 32
+      gs_rgb: 32                # 64
+    backbone_channels: [256, 512] # [512, 512], [256, 512, 1024]   # mixing layer after cat + expansion till global max-pool 
+    use_layernorm: true                     # in backbone
+    use_projection: true                    # projection to out_channels
+    final_norm: layernorm                   # within projection
+    out_channels: ${policy.encoder_output_dim}    
