@@ -37,9 +37,9 @@ class GSplatDP3(BasePolicy):
         use_down_condition=True,
         use_mid_condition=True,
         use_up_condition=True,
-        use_rgb_color=False,
         encoder_output_dim=64,
         gsplat_encoder_cfg=None,
+        use_state_features=True,
         # parameters passed to step
         **kwargs
     ):
@@ -64,6 +64,7 @@ class GSplatDP3(BasePolicy):
             observation_space=obs_dict,  
             out_channels=encoder_output_dim, 
             gsplat_encoder_cfg=gsplat_encoder_cfg,
+            use_state_features=use_state_features,
         )
 
         # create diffusion model
@@ -76,10 +77,6 @@ class GSplatDP3(BasePolicy):
                 global_cond_dim = obs_feature_dim
             else:
                 global_cond_dim = obs_feature_dim * n_obs_steps
-        
-
-        self.use_rgb_color = use_rgb_color
-        cprint(f"[DiffusionUnetHybridPointcloudPolicy] use_rgb_color: {self.use_rgb_color}", "yellow")
 
 
         model = ConditionalUnet1D(

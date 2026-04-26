@@ -157,6 +157,7 @@ class GSplatDP3Encoder(nn.Module):
         self,
         observation_space: Dict,
         out_channels: int = 64,
+        use_state_features: bool = True,
         state_mlp_size=(64, 64),
         state_mlp_activation_fn: Type[nn.Module] = nn.ReLU, 
         gsplat_encoder_cfg=None,
@@ -175,8 +176,10 @@ class GSplatDP3Encoder(nn.Module):
 
         cprint(f"[GSplatDP3Encoder] gsplat param shapes: {list(self.gs_obs_space.items())}", "yellow")
         cprint(f"[GSplatDP3Encoder] state shape: {self.state_shape}", "yellow")
+        cprint(f"[GSplatDP3Encoder] use state features: {use_state_features}", "yellow")
 
         gsplat_encoder_cfg = dict(gsplat_encoder_cfg) if gsplat_encoder_cfg else {}
+        self.use_state_features = use_state_features
         
         # Pass the extracted GS space downward so the inner MLP can build dynamic inputs based on gsplat_encoder_cfg
         self.extractor = GSplatSceneEncoder(
@@ -214,6 +217,9 @@ class GSplatDP3Encoder(nn.Module):
         # ── State features ───────────────────────────────────────────────────
         state = observations[self.state_key]
         state_feat = self.state_mlp(state)   # (B, state_dim)
+        
+        if not self.use_state_features:
+            state_feat = torch.zeros_like(state_feat)
 
         # Combine visual and proprioceptive context
         final_feat = torch.cat([gs_feat, state_feat], dim=-1)

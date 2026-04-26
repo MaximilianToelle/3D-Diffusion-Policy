@@ -16,6 +16,8 @@ policy:
   pointnet_type: ~
   pointcloud_encoder_cfg: ~
 
+  use_state_features: true
+
   # Gaussian Splatting parameters
   gsplat_encoder_cfg:
     param_keys_feature_dims: # defines which param groups to encode to which feature dim 
