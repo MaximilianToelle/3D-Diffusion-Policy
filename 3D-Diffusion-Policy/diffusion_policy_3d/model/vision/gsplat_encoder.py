@@ -60,13 +60,19 @@ class GSplatSceneEncoder(nn.Module):
 
         # Build an MLP for each parameter group defined for encoding from the observation space:
         for key in param_keys_feature_dims.keys():
+            param_group_feature_dim = param_keys_feature_dims[key]
+            
+            # Skip keys explicitly set to None or 0 (Hydra ablations/overrides)
+            if param_group_feature_dim is None or param_group_feature_dim <= 0:
+                print(f"Skipping {key} for gsplat_encoder!")
+                continue
+
             if key in observation_space:
                 self.ordered_keys.append(key)
                 
                 # The shape is a tuple/list (e.g., [1024, 3]), the last element is channel dim
                 param_dim = observation_space[key][-1] 
                 
-                param_group_feature_dim = param_keys_feature_dims[key]
                 self.param_groups[key] = _shallow_mlp(param_dim, param_group_feature_dim, activation_fn)
                 total_group_out += param_group_feature_dim
             else:
