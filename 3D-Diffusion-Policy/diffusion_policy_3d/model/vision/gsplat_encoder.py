@@ -75,7 +75,7 @@ class GSplatSceneEncoder(nn.Module):
         # ── 2. Gsplat Feature Backbone ──────────────────────────────────────
         layers = []
         current_in_dim = total_group_out
-        assert current_in_dim >= backbone_channels[0], "Mixing Layer is smaller than concatenated feature vectors"
+        assert backbone_channels[0] >= current_in_dim, "Mixing Layer is smaller than concatenated feature vectors"
 
         # Dynamically build the backbone to support any depth
         for out_dim in backbone_channels:
