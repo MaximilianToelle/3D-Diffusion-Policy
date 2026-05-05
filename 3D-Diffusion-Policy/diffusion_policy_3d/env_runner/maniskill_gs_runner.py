@@ -4,26 +4,26 @@ import numpy as np
 import tqdm
 import argparse
 import time
-import imageio
 import os
+import imageio
 
 import gsworld # Must be imported BEFORE arguments so it can securely inject into sys.path!
 from gsworld.mani_skill.utils.wrappers import GSWorldWrapper
 from arguments import PipelineParams
 import gymnasium
 
-from diffusion_policy_3d.env.maniskill.maniskill_wrapper import ManiSkillDP3Wrapper
+from diffusion_policy_3d.env.maniskill.maniskill_gs_wrapper import GSManiskillDP3Wrapper
 from diffusion_policy_3d.gym_util.multistep_wrapper import MultiStepWrapper
 from diffusion_policy_3d.gym_util.video_recording_wrapper import SimpleVideoRecordingWrapper
 
 from diffusion_policy_3d.policy.base_policy import BasePolicy
 from diffusion_policy_3d.common.pytorch_util import dict_apply
 from diffusion_policy_3d.env_runner.base_runner import BaseRunner
-
+import diffusion_policy_3d.common.logger_util as logger_util
 from termcolor import cprint
 
 
-class ManiSkillRunner(BaseRunner):
+class GSManiSkillRunner(BaseRunner):
     def __init__(self,
                  output_dir,
                  eval_episodes=20,
@@ -33,11 +33,10 @@ class ManiSkillRunner(BaseRunner):
                  fps=10,
                  tqdm_interval_sec=5.0,
                  n_envs=1,
-                 task_name="",
-                 robot_uids="",
-                 cam_name="",
+                 task_name=None,
                  device="cuda:0",
-                 num_points=1024
+                 num_gaussians=1024,
+                 use_gsplat_viewer=False,
                  ):
         super().__init__(output_dir)
         self.task_name = task_name
@@ -46,7 +45,7 @@ class ManiSkillRunner(BaseRunner):
             # Typically ManiSkill environments match task boundaries. Custom params should mirror run_with_gs.
             base_env = gymnasium.make(
                 task_name, 
-                robot_uids=robot_uids,
+                robot_uids="fr3_umi",
                 obs_mode="rgb+depth+segmentation",
                 control_mode="pd_joint_pos",
                 num_envs=n_envs,
@@ -57,12 +56,12 @@ class ManiSkillRunner(BaseRunner):
             
             parser = argparse.ArgumentParser()
             robot_pipe = PipelineParams(parser)
-            # Hardcoded GS cfg based on dataset scripts (can be parameterized in yaml) 
+            # Hardcoded GS cfg based on dataset scripts (can be parameterized in yaml)
             mapped_env = GSWorldWrapper(base_env, robot_pipe, scene_gs_cfg_name="fr3_stack", device=device)
-
+            
             return MultiStepWrapper(
                 SimpleVideoRecordingWrapper(
-                    ManiSkillDP3Wrapper(mapped_env, cam_name, num_points=num_points)
+                    GSManiskillDP3Wrapper(mapped_env, num_gaussians=num_gaussians, use_gsplat_viewer=use_gsplat_viewer)
                 ),
                 n_obs_steps=n_obs_steps,
                 n_action_steps=n_action_steps,
@@ -74,7 +73,8 @@ class ManiSkillRunner(BaseRunner):
         self.env = env_fn(self.task_name)
         self.fps = fps
         self.tqdm_interval_sec = tqdm_interval_sec
-
+        self.logger_util_test3 = logger_util.LargestKRecorder(K=3)
+        self.logger_util_test5 = logger_util.LargestKRecorder(K=5)
 
     def run(self, policy: BasePolicy, dataset=None, prefix: str = ""):
         device = policy.device
@@ -115,7 +115,11 @@ class ManiSkillRunner(BaseRunner):
 
                 with torch.no_grad():
                     obs_dict_input = {}
-                    obs_dict_input['point_cloud'] = obs_dict['point_cloud'].unsqueeze(0)
+                    obs_dict_input['gs_positions'] = obs_dict['gs_positions'].unsqueeze(0)
+                    obs_dict_input['gs_rotations_9d'] = obs_dict['gs_rotations_9d'].unsqueeze(0)
+                    obs_dict_input['gs_log_scales'] = obs_dict['gs_log_scales'].unsqueeze(0)
+                    obs_dict_input['gs_opacities'] = obs_dict['gs_opacities'].unsqueeze(0)
+                    obs_dict_input['gs_rgb'] = obs_dict['gs_rgb'].unsqueeze(0)
                     obs_dict_input['agent_pos'] = obs_dict['agent_pos'].unsqueeze(0)
                     action_dict = policy.predict_action(obs_dict_input)
 

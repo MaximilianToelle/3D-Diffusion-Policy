@@ -8,11 +8,11 @@ import os
 import imageio
 
 import gsworld # Must be imported BEFORE arguments so it can securely inject into sys.path!
-from gsworld.mani_skill.utils.wrappers import GSWorldWrapper
+from gsworld.mani_skill.utils.wrappers import WristCamGSWorldWrapper
 from arguments import PipelineParams
 import gymnasium
 
-from diffusion_policy_3d.env.maniskill.gs_maniskill_wrapper import GSManiskillDP3Wrapper
+from diffusion_policy_3d.env.maniskill.maniskill_wrist_cam_gs_wrapper import WristCamGSManiskillDP3Wrapper
 from diffusion_policy_3d.gym_util.multistep_wrapper import MultiStepWrapper
 from diffusion_policy_3d.gym_util.video_recording_wrapper import SimpleVideoRecordingWrapper
 
@@ -23,7 +23,7 @@ import diffusion_policy_3d.common.logger_util as logger_util
 from termcolor import cprint
 
 
-class GSManiSkillRunner(BaseRunner):
+class WristCamGSManiSkillRunner(BaseRunner):
     def __init__(self,
                  output_dir,
                  eval_episodes=20,
@@ -45,7 +45,7 @@ class GSManiSkillRunner(BaseRunner):
             # Typically ManiSkill environments match task boundaries. Custom params should mirror run_with_gs.
             base_env = gymnasium.make(
                 task_name, 
-                robot_uids="fr3_umi",
+                robot_uids="fr3_umi_wrist435_modified",
                 obs_mode="rgb+depth+segmentation",
                 control_mode="pd_joint_pos",
                 num_envs=n_envs,
@@ -57,11 +57,22 @@ class GSManiSkillRunner(BaseRunner):
             parser = argparse.ArgumentParser()
             robot_pipe = PipelineParams(parser)
             # Hardcoded GS cfg based on dataset scripts (can be parameterized in yaml)
-            mapped_env = GSWorldWrapper(base_env, robot_pipe, scene_gs_cfg_name="fr3_stack", device=device)
+            mapped_env = WristCamGSWorldWrapper(
+                base_env, 
+                robot_pipe, 
+                scene_gs_cfg_name="fr3_stack", 
+                device=device, 
+                use_gsplat_viewer=use_gsplat_viewer
+            )
             
             return MultiStepWrapper(
                 SimpleVideoRecordingWrapper(
-                    GSManiskillDP3Wrapper(mapped_env, num_gaussians=num_gaussians, use_gsplat_viewer=use_gsplat_viewer)
+                    WristCamGSManiskillDP3Wrapper(
+                        mapped_env, 
+                        num_gaussians=num_gaussians,
+                        n_action_steps=n_action_steps,
+                        n_obs_steps=n_obs_steps,
+                    )
                 ),
                 n_obs_steps=n_obs_steps,
                 n_action_steps=n_action_steps,
