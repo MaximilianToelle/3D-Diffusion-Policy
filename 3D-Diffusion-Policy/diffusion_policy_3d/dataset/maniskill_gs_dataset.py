@@ -33,13 +33,12 @@ class GSManiskillDataset(BaseDataset):
             
         self.actor_keys = [k for k in self.replay_buffer.keys() if k.startswith('actor_pose_')]
         self.keys = ['action', 'state', 'gsplats'] + self.actor_keys
-        # self.replay_buffer = ReplayBuffer.copy_from_path(
-        #     zarr_path, keys=['state', 'action', 'gsplats'])
             
         val_mask = get_val_mask(
             n_episodes=self.replay_buffer.n_episodes, 
             val_ratio=val_ratio,
-            seed=seed)
+            seed=seed
+        )
             
         train_mask = ~val_mask
         train_mask = downsample_mask(
@@ -224,7 +223,7 @@ class GSManiskillDataset(BaseDataset):
             )
 
         # Save to cache
-        print(f"Saving normalization stats of {list(normalizer.keys())} to {stats_path}")
+        print(f"Saving normalization stats of {list(normalizer.params_dict.keys())} to {stats_path}")
         torch.save(normalizer.state_dict(), stats_path)
 
         return normalizer
@@ -279,7 +278,8 @@ class GSManiskillDataset(BaseDataset):
             'action': action,
         }
         
-        if hasattr(self, 'actor_keys') and len(self.actor_keys) > 0:
+        # We do not need to normalize actor_keys, so they are not included in such a sample
+        if hasattr(self, 'actor_keys') and len(self.actor_keys) > 0 and all(k in sample for k in self.actor_keys):
             data['actor_poses'] = {k: torch.from_numpy(sample[k]).to(torch.float32) for k in self.actor_keys}
 
         return data
