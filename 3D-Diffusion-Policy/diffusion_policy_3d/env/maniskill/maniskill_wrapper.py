@@ -11,11 +11,11 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 class ManiSkillDP3Wrapper(gym.Env):
-    def __init__(self, env, num_points=1024):
+    def __init__(self, env, cam_name, num_points=1024):
         super().__init__()
         self.env = env
         self.num_points = num_points
-        self.cam = 'right_cam'
+        self.cam = cam_name
 
         # Cast Gymnasium action space to legacy Gym action space for DP3's wrapper math
         orig_as = self.env.action_space
@@ -38,7 +38,7 @@ class ManiSkillDP3Wrapper(gym.Env):
             ),
             'point_cloud': spaces.Box(
                 low=-float('inf'), high=float('inf'),
-                shape=(self.num_points, 6),
+                shape=(self.num_points, 3),
                 dtype='float32'
             ),
         })
