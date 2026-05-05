@@ -1,0 +1,27 @@
+name: maniskill
+
+shape_meta: &shape_meta
+  obs:
+    agent_pos:
+      shape: [9]
+      type: low_dim
+  action:
+    shape: [8]
+
+env_runner:
+  eval_episodes: 5
+  max_steps: 200
+  n_obs_steps: ${n_obs_steps}
+  n_action_steps: ${n_action_steps}
+  fps: 10
+  n_envs: 1
+  task_name: StackFr3Env-v1
+
+dataset:
+  horizon: ${horizon}
+  n_obs_steps: ${n_obs_steps}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  seed: 42
+  val_ratio: 0
+  max_train_episodes: 1

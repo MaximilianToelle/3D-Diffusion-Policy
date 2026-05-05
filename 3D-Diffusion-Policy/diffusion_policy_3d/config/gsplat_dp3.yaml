@@ -1,6 +1,6 @@
 defaults:
-  - dp3
-  - override task: gs_maniskill_stack
+  - base_dp3
+  - override task: maniskill_gs_stack
   - _self_
 
 name: train_gsplat_dp3
@@ -8,14 +8,6 @@ name: train_gsplat_dp3
 policy:
   _target_: diffusion_policy_3d.policy.gsplat_dp3.GSplatDP3
   encoder_output_dim: 64        # 128
-  
-  # Nullify inherited Point Cloud parameters
-  use_point_crop: ~
-  crop_shape: ~
-  use_pc_color: ~
-  pointnet_type: ~
-  pointcloud_encoder_cfg: ~
-
   use_state_features: true
 
   # Gaussian Splatting parameters
@@ -26,7 +18,7 @@ policy:
       gs_log_scales: 32         # 64
       gs_opacities: 16          # 32
       gs_rgb: 32                # 64
-    backbone_channels: [256, 512] # [512, 512], [256, 512, 1024]   # mixing layer after cat + expansion till global max-pool 
+    backbone_channels: [256, 512, 1024]  # [512, 512], [256, 512]  # mixing layer after cat + expansion till global max-pool 
     use_layernorm: true                     # in backbone
     use_projection: true                    # projection to out_channels
     final_norm: layernorm                   # within projection

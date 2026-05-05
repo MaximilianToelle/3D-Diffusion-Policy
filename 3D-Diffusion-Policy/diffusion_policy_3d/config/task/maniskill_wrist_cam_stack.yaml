@@ -1,0 +1,13 @@
+defaults:
+  - maniskill_stack  
+  - _self_            
+
+name: maniskill_wrist_cam_stack
+
+env_runner:
+  task_name: StackFr3WristCamEnv-v1
+  robot_uids: "fr3_umi_wrist435_modified"
+  cam_name: "wrist_cam"
+
+dataset:
+  zarr_path: /home/max/projects/gsplat_policy/datasets/3d_diffusion_policy/stack_wrist_cam
