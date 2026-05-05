@@ -21,13 +21,13 @@ import wandb
 import tqdm
 import numpy as np
 from termcolor import cprint
-import shutil
 import time
 import threading
 from hydra.core.hydra_config import HydraConfig
 from diffusion_policy_3d.policy.dp3 import DP3
 from diffusion_policy_3d.policy.gsplat_dp3 import GSplatDP3
 from diffusion_policy_3d.dataset.base_dataset import BaseDataset
+from diffusion_policy_3d.dataset.maniskill_wrist_cam_gs_dataset import WristCamGSManiskillDataset
 from diffusion_policy_3d.env_runner.base_runner import BaseRunner
 from diffusion_policy_3d.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy_3d.common.pytorch_util import dict_apply, optimizer_to
@@ -194,6 +194,10 @@ class TrainDP3Workspace:
                     # device transfer
                     batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                     
+                    if isinstance(dataset, WristCamGSManiskillDataset):
+                        # NOTE: FPS on CPU for each sample during batch generation is too slow
+                        batch = batched_gpu_fps(batch, num_samples=self.cfg.task.dataset.num_gaussians)
+
                     if train_sampling_batch is None:
                         train_sampling_batch = batch
 
@@ -205,20 +209,22 @@ class TrainDP3Workspace:
                     
                     t1_2 = time.time()
 
-                    # === For logging: Extract Gradient Norms and Feature Magnitudes === 
-                    extractor = self.model.obs_encoder.extractor
-                    # 1. Retrieve the feature magnitudes saved during the forward pass
-                    diagnostic_metrics = copy.deepcopy(extractor._latest_feature_magnitudes)
-                    # 2. Extract gradient norms for the last linear layer of each shallow MLP
-                    for key in extractor.ordered_keys:
-                        # param_groups[key] is a Sequential(Linear, LayerNorm, Mish, Linear)
-                        # Index 3 is the final nn.Linear layer before concatenation
-                        last_linear_layer = extractor.param_groups[key][3]
-                        
-                        if last_linear_layer.weight.grad is not None:
-                            # Compute L2 norm of the gradient tensor
-                            grad_norm = last_linear_layer.weight.grad.norm().item()
-                            diagnostic_metrics[f'grad_norm/{key}'] = grad_norm
+                    diagnostic_metrics = {}
+                    if self.cfg.policy._target_ == "diffusion_policy_3d.policy.gsplat_dp3.GSplatDP3":
+                        # === For logging: Extract Gradient Norms and Feature Magnitudes === 
+                        extractor = self.model.obs_encoder.extractor
+                        # 1. Retrieve the feature magnitudes saved during the forward pass
+                        diagnostic_metrics = copy.deepcopy(extractor._latest_feature_magnitudes)
+                        # 2. Extract gradient norms for the last linear layer of each shallow MLP
+                        for key in extractor.ordered_keys:
+                            # param_groups[key] is a Sequential(Linear, LayerNorm, Mish, Linear)
+                            # Index 3 is the final nn.Linear layer before concatenation
+                            last_linear_layer = extractor.param_groups[key][3]
+                            
+                            if last_linear_layer.weight.grad is not None:
+                                # Compute L2 norm of the gradient tensor
+                                grad_norm = last_linear_layer.weight.grad.norm().item()
+                                diagnostic_metrics[f'grad_norm/{key}'] = grad_norm
 
                     # step optimizer
                     if self.global_step % cfg.training.gradient_accumulate_every == 0:
@@ -296,6 +302,10 @@ class TrainDP3Workspace:
                             leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
                         for batch_idx, batch in enumerate(tepoch):
                             batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
+                            if isinstance(dataset, WristCamGSManiskillDataset):
+                                # NOTE: FPS on CPU for each sample during batch generation is too slow
+                                batch = batched_gpu_fps(batch, num_samples=self.num_gaussians)
+                            
                             loss, loss_dict = self.model.compute_loss(batch)
 
                             val_losses.append(loss)
@@ -524,7 +534,38 @@ class TrainDP3Workspace:
     @classmethod
     def create_from_snapshot(cls, path):
         return torch.load(open(path, 'rb'), pickle_module=dill)
+
+
+def batched_gpu_fps(batch, num_samples=1024):
+    obs = batch['obs']
+    B, T, N, _ = obs['gs_positions'].shape
     
+    # Grab t=0 positions and the lengths tensor
+    points_t0 = obs['gs_positions'][:, 0, :, :].to(torch.float32)
+    lengths = obs['gs_length']          # Shape: (B,)
+    del batch['obs']['gs_length']       # not needed afterwards
+    
+    # Batched GPU FPS with strict boundary enforcement
+    # The CUDA kernel will mathematically ignore any index >= lengths[i]
+    _, sampled_indices = sample_farthest_points(
+        points_t0, 
+        lengths=lengths, 
+        K=num_samples
+    )
+    
+    # Apply indices across all features and time steps
+    for key in ['gs_positions', 'gs_rotations_9d', 'gs_log_scales', 'gs_opacities', 'gs_rgb']:
+        tensor = obs[key]       # (B, T, 32768, D)
+        D = tensor.shape[-1]
+        
+        # Expand indices from (B, 1024) to (B, T, 1024, D)
+        gather_idx = sampled_indices.view(B, 1, num_samples, 1).expand(-1, T, -1, D)
+        
+        # Subsample to final target size
+        obs[key] = torch.gather(tensor, dim=2, index=gather_idx).to(torch.float32)
+        
+    return batch
+
 
 @hydra.main(
     version_base=None,

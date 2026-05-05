@@ -4,7 +4,9 @@
 # bash scripts/train_policy.sh simple_dp3 adroit_hammer 0322 0 0
 # bash scripts/train_policy.sh dp3 metaworld_basketball 0602 0 0
 # bash scripts/train_policy.sh dp3 maniskill_stack 0112 42 0
-# bash scripts/train_policy.sh gsplat_dp3 gs_maniskill_stack single_demo 42 0
+# bash scripts/train_policy.sh wrist_cam_dp3 maniskill_wrist_cam_stack single_demo 42 0
+# bash scripts/train_policy.sh gsplat_dp3 maniskill_gs_stack single_demo 42 0
+# bash scripts/train_policy.sh wrist_cam_gsplat_dp3 maniskill_wrist_cam_gs_stack single_demo 42 0
 
 
 DEBUG=False
