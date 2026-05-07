@@ -88,6 +88,7 @@ class WristCamGSManiskillDataset(BaseDataset):
             state_dict = torch.load(stats_path)
             normalizer = LinearNormalizer()
             normalizer.load_state_dict(state_dict)
+            normalizer.to(torch.float32)
             return normalizer
 
         print(f"Dataset does not contain normalization stats yet. Stats are computed now and saved for future runs...")
@@ -233,6 +234,8 @@ class WristCamGSManiskillDataset(BaseDataset):
         # Save to cache
         print(f"Saving normalization stats of {list(normalizer.params_dict.keys())} to {stats_path}")
         torch.save(normalizer.state_dict(), stats_path)
+        
+        normalizer.to(torch.float32)
 
         return normalizer
 
