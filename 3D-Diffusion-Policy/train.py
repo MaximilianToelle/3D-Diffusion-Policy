@@ -13,6 +13,7 @@ import torch
 import dill
 from omegaconf import OmegaConf
 import pathlib
+import re
 from torch.utils.data import DataLoader
 from pytorch3d.ops import sample_farthest_points
 import copy
@@ -379,9 +380,13 @@ class TrainDP3Workspace:
         cfg = copy.deepcopy(self.cfg)
         
         lastest_ckpt_path = self.get_checkpoint_path(tag=checkpoint_tag)
-        if lastest_ckpt_path.is_file():
-            cprint(f"Resuming from checkpoint {lastest_ckpt_path}", 'magenta')
-            self.load_checkpoint(path=lastest_ckpt_path)
+        if not lastest_ckpt_path.is_file():
+            raise FileNotFoundError(
+                f"Checkpoint tag '{checkpoint_tag}' resolved to missing path: {lastest_ckpt_path}"
+            )
+
+        cprint(f"Resuming from checkpoint {lastest_ckpt_path}", 'magenta')
+        self.load_checkpoint(path=lastest_ckpt_path)
         
         # configure env
         env_runner: BaseRunner
@@ -456,7 +461,7 @@ class TrainDP3Workspace:
         if tag=='latest':
             return pathlib.Path(self.output_dir).joinpath('checkpoints', f'{tag}.ckpt')
         elif tag=='best': 
-            # the checkpoints are saved as format: epoch={}-val_mean_score={}.ckpt
+            # the checkpoints are saved as format: epoch={}-val_mean_success_rates={}.ckpt
             # find the best checkpoint
             checkpoint_dir = pathlib.Path(self.output_dir).joinpath('checkpoints')
             all_checkpoints = os.listdir(checkpoint_dir)
@@ -465,7 +470,7 @@ class TrainDP3Workspace:
             for ckpt in all_checkpoints:
                 if 'latest' in ckpt:
                     continue
-                score = float(ckpt.split('val_mean_score=')[1].split('.ckpt')[0])
+                score = float(ckpt.split('val_mean_success_rates=')[1].split('.ckpt')[0])
                 if score > best_score:
                     best_ckpt = ckpt
                     best_score = score
