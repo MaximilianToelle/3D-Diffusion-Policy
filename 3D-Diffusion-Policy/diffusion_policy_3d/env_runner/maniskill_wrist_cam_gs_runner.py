@@ -127,6 +127,7 @@ class WristCamGSManiSkillRunner(BaseRunner):
                 with torch.no_grad():
                     obs_dict_input = {}
                     obs_dict_input['gs_positions'] = obs_dict['gs_positions'].unsqueeze(0)
+                    obs_dict_input['point_cloud'] = obs_dict['gs_positions'].unsqueeze(0)
                     obs_dict_input['gs_rotations_9d'] = obs_dict['gs_rotations_9d'].unsqueeze(0)
                     obs_dict_input['gs_log_scales'] = obs_dict['gs_log_scales'].unsqueeze(0)
                     obs_dict_input['gs_opacities'] = obs_dict['gs_opacities'].unsqueeze(0)

@@ -13,6 +13,11 @@ shape_meta: &shape_meta
         - ${task.num_gaussians}
         - 3
       type: spatial
+    point_cloud:  # for running dp3 on gsplat means
+      shape: 
+        - ${task.num_gaussians}
+        - 3
+      type: spatial
     gs_rotations_9d:
       shape: 
         - ${task.num_gaussians}

@@ -88,6 +88,9 @@ class WristCamGSManiskillDataset(BaseDataset):
             state_dict = torch.load(stats_path)
             normalizer = LinearNormalizer()
             normalizer.load_state_dict(state_dict)
+            # for training dp3 on gsplat dataset
+            if 'point_cloud' not in normalizer.params_dict and 'gs_positions' in normalizer.params_dict:
+                normalizer['point_cloud'] = normalizer['gs_positions']
             normalizer.to(torch.float32)
             return normalizer
 
@@ -169,6 +172,7 @@ class WristCamGSManiskillDataset(BaseDataset):
                 'mean': geometric_center, 'std': pos_max - pos_min
             }
         )
+        normalizer['point_cloud'] = normalizer['gs_positions']
 
         # --- Log Scales (Gaussian Normalization) ---
         N = stats['gs_log_scales']['count']
@@ -344,6 +348,7 @@ class WristCamGSManiskillDataset(BaseDataset):
         data = {
             'obs': {
                 'gs_positions': gsplats[..., :3],
+                'point_cloud': gsplats[..., :3],
                 'gs_rotations_9d': gsplats[..., 3:12],
                 'gs_log_scales': gsplats[..., 12:15],
                 'gs_opacities': gsplats[..., 15:16],
