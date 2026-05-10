@@ -283,8 +283,8 @@ class TrainDP3Workspace:
             # run rollouts based on training and validation init poses
             if (self.epoch % cfg.training.rollout_every) == 0 and RUN_ROLLOUT and env_runner is not None:
                 t3 = time.time()
-                runner_log_train = env_runner.run(policy, dataset=dataset, prefix="train")
-                runner_log_val = env_runner.run(policy, dataset=val_dataset, prefix="val")
+                runner_log_train = env_runner.run(policy, dataset=dataset, prefix=f"train_epoch_{self.epoch}")
+                runner_log_val = env_runner.run(policy, dataset=val_dataset, prefix=f"val_epoch_{self.epoch}")
                 t4 = time.time()
                 # print(f"rollout time: {(t4-t3)/2:.3f}")
                 
