@@ -98,10 +98,13 @@ class PointNetEncoderXYZRGB(nn.Module):
             self.final_projection = nn.Linear(block_channel[-1], out_channels)
         else:
             raise NotImplementedError(f"final_norm: {final_norm}")
+
+        # For logging
+        self._latest_pool_indices = None
          
     def forward(self, x):
         x = self.mlp(x)
-        x = torch.max(x, 1)[0]
+        x, self._latest_pool_indices = torch.max(x, 1)
         x = self.final_projection(x)
         return x
     
@@ -169,11 +172,14 @@ class PointNetEncoderXYZ(nn.Module):
             self.mlp[0].register_forward_hook(self.save_input)
             self.mlp[6].register_forward_hook(self.save_feature)
             self.mlp[6].register_backward_hook(self.save_gradient)
+
+        # For logging
+        self._latest_pool_indices = None
          
          
     def forward(self, x):
         x = self.mlp(x)
-        x = torch.max(x, 1)[0]
+        x, self._latest_pool_indices = torch.max(x, 1)
         x = self.final_projection(x)
         return x
     

@@ -108,6 +108,9 @@ class GSplatSceneEncoder(nn.Module):
             self.final_projection = nn.Identity()
             cprint("[GSplatSceneEncoder] not using final projection", "yellow")
 
+        # Logging
+        self._latest_pool_indices = None
+
     def forward(self, gs_data_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
         Args:
@@ -134,8 +137,7 @@ class GSplatSceneEncoder(nn.Module):
         features = self.gsplat_feature_backbone(merged)       # (B, N, backbone[-1])
 
         # 4. Global max-pool over Gaussians
-        global_feat, pool_indices = torch.max(features, dim=1)           # (B, backbone[-1])
-        self._latest_pool_indices = pool_indices    # for logging
+        global_feat, self._latest_pool_indices = torch.max(features, dim=1)           # (B, backbone[-1])
 
         # 5. Final projection
         global_feat = self.final_projection(global_feat)      # (B, out_channels)

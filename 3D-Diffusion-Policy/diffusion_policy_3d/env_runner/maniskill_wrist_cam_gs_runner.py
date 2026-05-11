@@ -7,6 +7,9 @@ import time
 import os
 import imageio
 
+import matplotlib.pyplot as plt
+import numpy as np 
+
 import gsworld # Must be imported BEFORE arguments so it can securely inject into sys.path!
 from gsworld.mani_skill.utils.wrappers import WristCamGSWorldWrapper
 from arguments import PipelineParams
@@ -84,18 +87,23 @@ class WristCamGSManiSkillRunner(BaseRunner):
         self.env = env_fn(self.task_name)
         self.fps = fps
         self.tqdm_interval_sec = tqdm_interval_sec
-        self.logger_util_test3 = logger_util.LargestKRecorder(K=3)
-        self.logger_util_test5 = logger_util.LargestKRecorder(K=5)
 
     def run(self, policy: BasePolicy, dataset=None, prefix: str = ""):
         device = policy.device
         all_traj_rewards = []
         all_success_rates = []
+        all_num_steps_to_success = []
+        
         env = self.env
+
+        all_expert_trajectories = []
+        all_policy_trajectories = []
 
         for episode_idx in tqdm.tqdm(range(self.eval_episodes), desc=f"Eval ManiSkill {self.task_name}", leave=False, mininterval=self.tqdm_interval_sec):
             
             init_state = None
+            expert_q_sequence = None
+            
             if dataset is not None:
                 replay_buffer = dataset.replay_buffer
                 
@@ -105,6 +113,7 @@ class WristCamGSManiSkillRunner(BaseRunner):
                 random_episode_idx = np.random.choice(valid_episode_indices)
                 
                 start_idx = replay_buffer.episode_ends[random_episode_idx - 1] if random_episode_idx > 0 else 0
+                end_idx = replay_buffer.episode_ends[random_episode_idx]
                 
                 init_state = dict()
                 if hasattr(dataset, 'actor_keys') and len(dataset.actor_keys) > 0:
@@ -112,14 +121,24 @@ class WristCamGSManiSkillRunner(BaseRunner):
                         k: replay_buffer[k][start_idx] for k in dataset.actor_keys
                     }
                 init_state['agent_pos'] = replay_buffer['state'][start_idx]
-             
+
+                expert_q_sequence = replay_buffer['state'][start_idx:end_idx]
+
             obs = env.reset(options={'init_state': init_state} if init_state is not None else None)
             policy.reset()
 
             done = False
             traj_reward = 0
             is_success = False
+
+            current_policy_q = []
+
             while not done:
+                current_pos = obs['agent_pos'].cpu().numpy()
+                if len(current_pos.shape) > 1:
+                    current_pos = current_pos[-1]
+                current_policy_q.append(current_pos)
+
                 obs_dict = dict_apply(dict(obs),
                                       lambda x: x.to(device=device) if isinstance(x, torch.Tensor)
                                       else torch.from_numpy(x).to(device=device))
@@ -133,7 +152,20 @@ class WristCamGSManiSkillRunner(BaseRunner):
                     obs_dict_input['gs_opacities'] = obs_dict['gs_opacities'].unsqueeze(0)
                     obs_dict_input['gs_rgb'] = obs_dict['gs_rgb'].unsqueeze(0)
                     obs_dict_input['agent_pos'] = obs_dict['agent_pos'].unsqueeze(0)
+                    
                     action_dict = policy.predict_action(obs_dict_input)
+
+                pool_idx = policy.obs_encoder.extractor._latest_pool_indices
+                if len(pool_idx.shape) > 1:
+                    pool_idx = pool_idx[-1]
+                if len(obs_dict['gs_rgb'].shape) > 1:
+                    obs_gs_rgb = obs_dict['gs_rgb'][-1]
+                # Inject the selected Gaussians back into the full original Gaussian scene
+                apply_heatmap_to_full_scene(
+                    env_wrapper=env.unwrapped, 
+                    pool_idx=pool_idx, 
+                    obs_gs_rgb=obs_gs_rgb
+                )
 
                 action_dict = dict_apply(action_dict,
                                           lambda x: x.detach())
@@ -156,6 +188,12 @@ class WristCamGSManiSkillRunner(BaseRunner):
                         s = bool(s)
                     is_success = is_success or s
 
+            all_expert_trajectories.append(expert_q_sequence)
+            all_policy_trajectories.append(np.array(current_policy_q))
+
+            if is_success:
+                all_num_steps_to_success.append(info["elapsed_steps"][-1].item())
+
             all_success_rates.append(float(is_success))
             all_traj_rewards.append(float(traj_reward))
             
@@ -168,12 +206,33 @@ class WristCamGSManiSkillRunner(BaseRunner):
                 video_dir = os.path.join(self.output_dir, "eval_videos")
                 os.makedirs(video_dir, exist_ok=True)
                 video_to_save = video.transpose(0, 2, 3, 1) # Convert to (T, H, W, C)
-                out_path = os.path.join(video_dir, f"{prefix}_ep_{episode_idx}.mp4")
+                if is_success:
+                    out_path = os.path.join(video_dir, f"{prefix}_ep_{episode_idx}_success.mp4")
+                else:
+                    out_path = os.path.join(video_dir, f"{prefix}_ep_{episode_idx}_failure.mp4")
                 imageio.mimsave(out_path, video_to_save, fps=self.fps, macro_block_size=1)
                 cprint(f"Saved evaluation video to {out_path}", "cyan")
                 
             except Exception as e:
                 cprint(f"Failed to extract/save video from wrapper: {e}", "red")
+
+        try:
+            plot_dir = os.path.join(self.output_dir, "eval_plots")
+            os.makedirs(plot_dir, exist_ok=True)
+            plot_path = os.path.join(plot_dir, f"{prefix}_phase_corridor.png")
+            
+            control_dt = 1.0 / self.env.unwrapped.env.unwrapped.control_freq 
+            
+            save_phase_corridor_plot(
+                all_expert_trajectories, 
+                all_policy_trajectories, 
+                dt=control_dt, 
+                save_path=plot_path
+            )
+            cprint(f"Saved Phase Corridor plot to {plot_path}", "cyan")
+        except Exception as e:
+            cprint(f"Failed to generate phase corridor plot: {e}", "red")
+
 
         def _mean(lst):
             return sum(lst) / len(lst) if lst else 0.0
@@ -181,12 +240,133 @@ class WristCamGSManiSkillRunner(BaseRunner):
         log_data = dict()
         log_data['mean_traj_rewards'] = _mean(all_traj_rewards)
         log_data['mean_success_rates'] = _mean(all_success_rates)
-        # log_data['mean_score'] = _mean(all_success_rates)
+        
         cprint(f"mean_success_rates: {_mean(all_success_rates)}", 'green')
 
-        # self.logger_util_test3.record(_mean(all_success_rates))
-        # self.logger_util_test5.record(_mean(all_success_rates))
-        # log_data['success_rate_largest_3'] = self.logger_util_test3.average_of_largest_K()
-        # log_data['success_rate_largest_5'] = self.logger_util_test5.average_of_largest_K()
-
+        if len(all_num_steps_to_success) > 0:
+            log_data["steps_p25"] = np.percentile(all_num_steps_to_success, 25)
+            log_data["steps_median"] = np.median(all_num_steps_to_success)
+            log_data["steps_p75"] = np.percentile(all_num_steps_to_success, 75)
+        else:
+            # Penalize with max horizon to visually indicate failure
+            log_data["steps_p25"] = env.max_episode_steps
+            log_data["steps_median"] = env.max_episode_steps
+            log_data["steps_p75"] = env.max_episode_steps
+        
         return log_data
+
+
+def save_phase_corridor_plot(
+    expert_trajectories: list, 
+    policy_trajectories: list, 
+    dt: float, 
+    save_path: str
+):
+    """ Generates the Velocity vs Position Phase Plot for all joints."""
+    
+    if len(expert_trajectories) == 0 or len(policy_trajectories) == 0:
+        return None
+
+    # Get num joints from the first trajectory (assuming shape: T, num_joints)
+    num_joints = expert_trajectories[0].shape[1]
+    
+    fig, axes = plt.subplots(nrows=num_joints, ncols=1, figsize=(10, 3 * num_joints))
+    if num_joints == 1: axes = [axes]
+    fig.suptitle("Phase Corridor: Policy vs. Ground Truth", fontsize=16, fontweight='bold')
+    
+    for j in range(num_joints):
+        ax = axes[j]
+        
+        # Plot all Policy Rollouts (Thin, translucent red)
+        for i, p_q in enumerate(policy_trajectories):
+            p_dq = np.gradient(p_q, dt, axis=0)
+            label = 'Policy Rollout' if i == 0 else "_nolegend_"
+            ax.plot(p_q[:, j], p_dq[:, j], color='red', alpha=0.3, linewidth=1.0, label=label)
+
+        # Plot all Expert Ground Truths (Thick, black, dashed)
+        for i, e_q in enumerate(expert_trajectories):
+            e_dq = np.gradient(e_q, dt, axis=0)
+            label = 'Motion Planner (Expert)' if i == 0 else "_nolegend_"
+            ax.plot(e_q[:, j], e_dq[:, j], color='black', linewidth=2, label=label)
+            # Mark start and end targets
+            ax.scatter(e_q[0, j], e_dq[0, j], c='green', marker='o', s=100, zorder=5, label='Start' if i == 0 else "_nolegend_")
+            ax.scatter(e_q[-1, j], e_dq[-1, j], c='black', marker='*', s=150, zorder=5, label='End Target' if i == 0 else "_nolegend_")
+
+        ax.set_title(f"Joint {j}")
+        ax.set_ylabel("Velocity [rad/s]")
+        ax.grid(True, alpha=0.3)
+        if j == 0: ax.legend(loc='upper right')
+        if j == num_joints - 1: ax.set_xlabel("Position [rad]")
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.98])
+    plt.savefig(save_path, dpi=300)
+    plt.close(fig)
+
+
+def apply_heatmap_to_full_scene(env_wrapper, pool_idx: torch.Tensor, obs_gs_rgb: torch.Tensor):
+    """
+    Computes the heatmap for the 1024 sampled Gaussians and injects them back into the full scene.
+    The rest of the scene remains its original color.
+    """
+    heatmap_override = compute_gs_heatmap(pool_idx, obs_gs_rgb)
+    
+    gs_world_wrapper = env_wrapper.env
+    original_feat_dc = gs_world_wrapper.merged_init_gaussian_models._features_dc
+    if original_feat_dc.ndim == 3:
+        original_feat_dc = original_feat_dc.squeeze(1) # (N_total, 3)
+    
+    # 1. Full scene remains original color
+    full_rgb = (original_feat_dc * gs_world_wrapper.SH_C0 + 0.5).clamp(0, 1).clone()
+
+    # 2. Map the 1024 points back to the full scene
+    moving_to_full_indices = torch.cat([
+        gs_world_wrapper._semantic_indices[k] 
+        for k in gs_world_wrapper.moving_gaussians.keys() 
+    ])
+    full_indices_1024 = moving_to_full_indices[env_wrapper.gaussian_indices]
+
+    # 3. Insert heatmap colors into the full scene
+    full_rgb[full_indices_1024] = heatmap_override
+
+    # Overwrite rendering
+    gs_world_wrapper.overwrite_gs_rgb_for_rendering(full_rgb)
+
+
+def compute_gs_heatmap(pool_indices: torch.Tensor, original_rgb: torch.Tensor, colormap='hot') -> torch.Tensor:
+    """
+    Args:
+        pool_indices: (K) tensor from the max pool.
+        original_rgb: (N, 3) tensor of the raw Gaussian colors [0, 1].
+    Returns:
+        heatmap_rgb: (N, 3) tensor ready for rendering.
+    """
+    N, _ = original_rgb.shape
+    device = original_rgb.device
+    heatmap_rgb = original_rgb.clone()
+
+    cmap = plt.get_cmap(colormap)
+
+    # 1. Count frequencies
+    unique_idx, counts = torch.unique(pool_indices, return_counts=True)
+    
+    # 2. Normalize counts to [0, 1] for the colormap
+    max_count = counts.max().float().clamp(min=1e-5)
+    normalized_intensity = counts.float() / max_count
+    
+    # 3. Grayscale (Pleasantville effect)
+    # Using standard luminance weights: 0.299 R + 0.587 G + 0.114 B
+    gray = (0.299 * heatmap_rgb[:, 0] + 
+            0.587 * heatmap_rgb[:, 1] + 
+            0.114 * heatmap_rgb[:, 2])
+    # Replicate grayscale to all 3 channels
+    heatmap_rgb[:, :] = gray.unsqueeze(-1).repeat(1, 3)
+    
+    # 4. Map the selected Gaussians to vibrant colors
+    # cmap returns (R, G, B, A) in [0, 1]. We take RGB.
+    colors_np = cmap(normalized_intensity.cpu().numpy())[:, :3] 
+    colors_tensor = torch.from_numpy(colors_np).to(device, dtype=torch.float32)
+    
+    # 5. Overwrite the grayscale with the heatmap colors for the winning indices
+    heatmap_rgb[unique_idx, :] = colors_tensor
+
+    return heatmap_rgb
