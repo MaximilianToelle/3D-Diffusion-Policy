@@ -88,7 +88,7 @@ training:
   debug: False
   resume: True
   lr_scheduler: cosine
-  lr_warmup_steps: 20      # 1% of training, overfitting to single trajectory (2 steps per epoch)
+  lr_warmup_steps: 40      # 1% of training, overfitting to single trajectory (2 steps per epoch)
   num_epochs: 2000     
   gradient_accumulate_every: 1
   use_ema: True

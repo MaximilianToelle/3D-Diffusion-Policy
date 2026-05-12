@@ -7,6 +7,8 @@ from gsworld.mani_skill.utils.gsplat_viewer.utils_rasterize_render import _viewe
 
 from pytorch3d.ops import sample_farthest_points
 
+from diffusion_policy_3d.common.gs_util import compute_gs_normals
+
 
 class WristCamGSManiskillDP3Wrapper(gym.Env):
     """
@@ -54,6 +56,11 @@ class WristCamGSManiskillDP3Wrapper(gym.Env):
             'gs_rotations_9d': spaces.Box(
                 low=-float(1), high=float(1),
                 shape=(self.num_gaussians, 9), 
+                dtype='float32'
+            ),
+            'gs_surface_normals': spaces.Box(
+                low=-float(1), high=float(1),
+                shape=(self.num_gaussians, 3), 
                 dtype='float32'
             ),
             'gs_log_scales': spaces.Box(
@@ -105,6 +112,7 @@ class WristCamGSManiskillDP3Wrapper(gym.Env):
         obs_dict["gs_positions"] = gsplats[self.gaussian_indices, :3]
         obs_dict["gs_rotations_9d"] = gsplats[self.gaussian_indices, 3:12]
         obs_dict["gs_log_scales"] = gsplats[self.gaussian_indices, 12:15]
+        obs_dict["gs_surface_normals"] = compute_gs_normals(obs_dict["gs_rotations_9d"], obs_dict["gs_log_scales"])
         obs_dict["gs_opacities"] = gsplats[self.gaussian_indices, 15:16]
         obs_dict["gs_rgb"] = gsplats[self.gaussian_indices, 16:19]
 

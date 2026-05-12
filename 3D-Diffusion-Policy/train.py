@@ -558,9 +558,7 @@ def batched_gpu_fps(batch, num_samples=1024):
         K=num_samples
     )
     
-    keys_to_subsample = ['gs_positions', 'gs_rotations_9d', 'gs_log_scales', 'gs_opacities', 'gs_rgb']
-    if 'point_cloud' in obs:
-        keys_to_subsample.append('point_cloud')
+    keys_to_subsample = [k for k in obs.keys() if k not in ['agent_pos', 'gs_length']]
         
     # Apply indices across all features and time steps
     for key in keys_to_subsample:

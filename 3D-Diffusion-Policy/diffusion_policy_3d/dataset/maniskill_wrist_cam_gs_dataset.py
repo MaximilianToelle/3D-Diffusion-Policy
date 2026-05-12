@@ -12,6 +12,7 @@ from diffusion_policy_3d.model.common.normalizer import LinearNormalizer, Single
 from diffusion_policy_3d.dataset.base_dataset import BaseDataset
 
 from pytorch3d.ops import sample_farthest_points
+from diffusion_policy_3d.common.gs_util import compute_gs_normals
 
 
 class WristCamGSManiskillDataset(BaseDataset):
@@ -91,6 +92,8 @@ class WristCamGSManiskillDataset(BaseDataset):
             # for training dp3 on gsplat dataset
             if 'point_cloud' not in normalizer.params_dict and 'gs_positions' in normalizer.params_dict:
                 normalizer['point_cloud'] = normalizer['gs_positions']
+            if 'gs_surface_normals' not in normalizer.params_dict:
+                normalizer['gs_surface_normals'] = SingleFieldLinearNormalizer.create_identity(dtype=torch.float32)
             normalizer.to(torch.float32)
             return normalizer
 
@@ -198,6 +201,7 @@ class WristCamGSManiskillDataset(BaseDataset):
         # --- Hardcoded Physics Bounds ---
         # by construction (orthogonal matrix) between [-1, 1]
         normalizer['gs_rotations_9d'] = SingleFieldLinearNormalizer.create_identity(dtype=torch.float32)
+        normalizer['gs_surface_normals'] = SingleFieldLinearNormalizer.create_identity(dtype=torch.float32)
 
         # got processed with sigmoid -> [0, 1]
         normalizer['gs_opacities'] = SingleFieldLinearNormalizer.create_manual(
@@ -350,6 +354,7 @@ class WristCamGSManiskillDataset(BaseDataset):
                 'gs_positions': gsplats[..., :3],
                 'point_cloud': gsplats[..., :3],
                 'gs_rotations_9d': gsplats[..., 3:12],
+                'gs_surface_normals': compute_gs_normals(gsplats[..., 3:12], gsplats[..., 12:15]),
                 'gs_log_scales': gsplats[..., 12:15],
                 'gs_opacities': gsplats[..., 15:16],
                 'gs_rgb': gsplats[..., 16:19],

@@ -23,6 +23,11 @@ shape_meta: &shape_meta
         - ${task.num_gaussians}
         - 9
       type: spatial
+    gs_surface_normals:   # trying to use surface normals instead of rotation matrices
+      shape: 
+        - ${task.num_gaussians}
+        - 3
+      type: spatial
     gs_log_scales:
       shape: 
         - ${task.num_gaussians}
