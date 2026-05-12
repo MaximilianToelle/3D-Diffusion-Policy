@@ -92,10 +92,10 @@ training:
   num_epochs: 2000     
   gradient_accumulate_every: 1
   use_ema: True
-  rollout_every: 200
-  checkpoint_every: 200
-  val_every: 200
-  sample_every: 200              
+  rollout_every: 500
+  checkpoint_every: 500
+  val_every: 500
+  sample_every: 500              
   max_train_steps: null
   max_val_steps: null
   tqdm_interval_sec: 1.0
