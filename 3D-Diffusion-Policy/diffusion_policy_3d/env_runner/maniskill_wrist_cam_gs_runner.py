@@ -8,7 +8,11 @@ import os
 import imageio
 
 import matplotlib.pyplot as plt
-import numpy as np 
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import cv2
 
 import gsworld # Must be imported BEFORE arguments so it can securely inject into sys.path!
 from gsworld.mani_skill.utils.wrappers import WristCamGSWorldWrapper
@@ -206,6 +210,7 @@ class WristCamGSManiSkillRunner(BaseRunner):
                 video_dir = os.path.join(self.output_dir, "eval_videos")
                 os.makedirs(video_dir, exist_ok=True)
                 video_to_save = video.transpose(0, 2, 3, 1) # Convert to (T, H, W, C)
+                video_to_save = add_legend_to_video(video_to_save, colormap='cool')
                 if is_success:
                     out_path = os.path.join(video_dir, f"{prefix}_ep_{episode_idx}_success.mp4")
                 else:
@@ -303,36 +308,42 @@ def save_phase_corridor_plot(
     plt.close(fig)
 
 
-def apply_heatmap_to_full_scene(env_wrapper, pool_idx: torch.Tensor, obs_gs_rgb: torch.Tensor):
+def apply_heatmap_to_full_scene(env_wrapper, pool_idx: torch.Tensor, obs_gs_rgb: torch.Tensor,
+                                 bg_opacity: float = 0.1, highlight_opacity: float = 1.0, colormap: str = 'cool'):
     """
     Computes the heatmap for the 1024 sampled Gaussians and injects them back into the full scene.
     The rest of the scene remains its original color.
+    
+    Also overwrites opacities so that highlighted Gaussians are fully opaque
+    and the rest of the scene is semi-transparent, preventing occlusion issues during rendering.
+    
+    Args:
+        bg_opacity: opacity for non-highlighted Gaussians in [0, 1] (default 0.2)
+        highlight_opacity: opacity for highlighted Gaussians in [0, 1] (default 1.0)
     """
-    heatmap_override = compute_gs_heatmap(pool_idx, obs_gs_rgb)
+    heatmap_rgb = compute_gs_heatmap(pool_idx, obs_gs_rgb, colormap=colormap)
     
     gs_world_wrapper = env_wrapper.env
-    original_feat_dc = gs_world_wrapper.merged_init_gaussian_models._features_dc
-    if original_feat_dc.ndim == 3:
-        original_feat_dc = original_feat_dc.squeeze(1) # (N_total, 3)
-    
-    # 1. Full scene remains original color
-    full_rgb = (original_feat_dc * gs_world_wrapper.SH_C0 + 0.5).clamp(0, 1).clone()
 
-    # 2. Map the 1024 points back to the full scene
+    # Map the 1024 sampled points back to indices in the full Gaussian scene
     moving_to_full_indices = torch.cat([
         gs_world_wrapper._semantic_indices[k] 
         for k in gs_world_wrapper.moving_gaussians.keys() 
     ])
     full_indices_1024 = moving_to_full_indices[env_wrapper.gaussian_indices]
 
-    # 3. Insert heatmap colors into the full scene
-    full_rgb[full_indices_1024] = heatmap_override
+    # Overwrite colors at the highlighted indices
+    gs_world_wrapper.overwrite_gs_rgb_for_rendering(heatmap_rgb, full_indices_1024)
 
-    # Overwrite rendering
-    gs_world_wrapper.overwrite_gs_rgb_for_rendering(full_rgb)
+    # Build full-scene opacity: background gets dimmed, highlighted Gaussians are fully opaque
+    N_total = gs_world_wrapper.merged_init_gaussian_models._opacity.shape[0]
+    device = full_indices_1024.device
+    all_opacities = torch.full((N_total,), bg_opacity, device=device)
+    all_opacities[full_indices_1024] = highlight_opacity
+    gs_world_wrapper.overwrite_gs_opacity_for_rendering(all_opacities)
 
 
-def compute_gs_heatmap(pool_indices: torch.Tensor, original_rgb: torch.Tensor, colormap='hot') -> torch.Tensor:
+def compute_gs_heatmap(pool_indices: torch.Tensor, original_rgb: torch.Tensor, colormap='cool') -> torch.Tensor:
     """
     Args:
         pool_indices: (K) tensor from the max pool.
@@ -353,13 +364,15 @@ def compute_gs_heatmap(pool_indices: torch.Tensor, original_rgb: torch.Tensor, c
     max_count = counts.max().float().clamp(min=1e-5)
     normalized_intensity = counts.float() / max_count
     
-    # 3. Grayscale (Pleasantville effect)
-    # Using standard luminance weights: 0.299 R + 0.587 G + 0.114 B
+    # 3. Yellow tint for ignored Gaussians
+    # Using standard luminance weights to get grayscale intensity
     gray = (0.299 * heatmap_rgb[:, 0] + 
             0.587 * heatmap_rgb[:, 1] + 
             0.114 * heatmap_rgb[:, 2])
-    # Replicate grayscale to all 3 channels
-    heatmap_rgb[:, :] = gray.unsqueeze(-1).repeat(1, 3)
+    # Apply yellow tint (R=gray, G=gray, B=0)
+    heatmap_rgb[:, 0] = gray
+    heatmap_rgb[:, 1] = gray
+    heatmap_rgb[:, 2] = 0.0
     
     # 4. Map the selected Gaussians to vibrant colors
     # cmap returns (R, G, B, A) in [0, 1]. We take RGB.
@@ -370,3 +383,46 @@ def compute_gs_heatmap(pool_indices: torch.Tensor, original_rgb: torch.Tensor, c
     heatmap_rgb[unique_idx, :] = colors_tensor
 
     return heatmap_rgb
+
+
+def add_legend_to_video(video_frames, colormap='cool'):
+    """
+    Appends a legend (colorbar) to the bottom of the video frames.
+    video_frames: (T, H, W, C) numpy array of uint8
+    """
+
+    T, H, W, C = video_frames.shape
+    dpi = 100
+    fig_height = 1.0  # inches
+    fig = Figure(figsize=(W / dpi, fig_height), dpi=dpi)
+    canvas = FigureCanvasAgg(fig)
+    
+    # Create axes for colorbar
+    ax = fig.add_axes([0.1, 0.4, 0.8, 0.2]) # left, bottom, width, height
+    
+    cmap = plt.get_cmap(colormap)
+    norm = mcolors.Normalize(vmin=0, vmax=1)
+    
+    cb = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap),
+                      cax=ax, orientation='horizontal')
+    cb.set_label('Policy Attention Frequency (Normalized)', fontsize=8)
+    cb.ax.tick_params(labelsize=8)
+    
+    # Add descriptive text
+    fig.text(0.5, 0.8, "Magenta: High Attention | Cyan: Low Attention | Yellow: Ignored", 
+             ha='center', va='center', fontsize=9, fontweight='bold')
+    
+    # Render to numpy array
+    canvas.draw()
+    colorbar_img = np.asarray(canvas.buffer_rgba())[..., :3] # Get RGB channels
+    
+    # Ensure width matches exactly
+    ch, cw, _ = colorbar_img.shape
+    if cw != W:
+        colorbar_img = cv2.resize(colorbar_img, (W, ch))
+        
+    # Tile across all frames
+    colorbar_video = np.tile(colorbar_img[None, ...], (T, 1, 1, 1))
+    
+    # Concatenate vertically
+    return np.concatenate([video_frames, colorbar_video], axis=1)

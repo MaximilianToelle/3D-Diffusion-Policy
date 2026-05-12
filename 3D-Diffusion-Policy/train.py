@@ -400,7 +400,7 @@ class TrainDP3Workspace:
         policy.eval()
         policy.cuda()
 
-        runner_log = env_runner.run(policy)
+        runner_log = env_runner.run(policy, prefix=f"test_epoch_{self.epoch}")
         
       
         cprint(f"---------------- Eval Results --------------", 'magenta')
