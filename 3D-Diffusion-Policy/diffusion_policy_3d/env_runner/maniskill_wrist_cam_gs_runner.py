@@ -286,12 +286,14 @@ def save_phase_corridor_plot(
         # Plot all Policy Rollouts (Thin, translucent red)
         for i, p_q in enumerate(policy_trajectories):
             p_dq = np.gradient(p_q, dt, axis=0)
+            p_dq[0] = 0.0   # np.gradient is inaccurate for t=0. Maniskill resets agent to zero velocity! 
             label = 'Policy Rollout' if i == 0 else "_nolegend_"
             ax.plot(p_q[:, j], p_dq[:, j], color='red', alpha=0.3, linewidth=1.0, label=label)
 
         # Plot all Expert Ground Truths (Thick, black, dashed)
         for i, e_q in enumerate(expert_trajectories):
             e_dq = np.gradient(e_q, dt, axis=0)
+            e_dq[0] = 0.0   # np.gradient is inaccurate for t=0. Maniskill resets agent to zero velocity! 
             label = 'Motion Planner (Expert)' if i == 0 else "_nolegend_"
             ax.plot(e_q[:, j], e_dq[:, j], color='black', linewidth=2, label=label)
             # Mark start and end targets
